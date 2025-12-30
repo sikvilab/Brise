@@ -25,6 +25,7 @@ say:"Welcome to brise, (user)!"
 
 List: tools (Logic, Speed, Simplicity)
 Say to everyone:(say:"Feature: (item)")
+```
 ---
 # 🌉 brise Language (v0.1 Alpha)
 
