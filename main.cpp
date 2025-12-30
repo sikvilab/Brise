@@ -1,3 +1,5 @@
+#include "libs/brise_math.h"
+#include "libs/brise_random.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -110,3 +112,4 @@ int main(int argc, char* argv[]) {
     return 0;
 
 }
+
