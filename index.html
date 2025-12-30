@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brise Language | Sikvilab</title>
+    <style>
+        /* CSS прямо тут — для красоты */
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        nav {
+            width: 100%;
+            background-color: #161b22;
+            padding: 1rem 0;
+            display: flex;
+            justify-content: center;
+            border-bottom: 1px solid #30363d;
+            position: sticky;
+            top: 0;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            color: #8b949e;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 1.1rem;
+            transition: 0.3s;
+        }
+
+        .tab-btn:hover { color: #58a6ff; }
+        .tab-btn.active { color: #58a6ff; border-bottom: 2px solid #58a6ff; }
+
+        .container {
+            max-width: 800px;
+            padding: 40px 20px;
+            text-align: center;
+        }
+
+        h1 { color: #f0f6fc; font-size: 3rem; margin-bottom: 10px; }
+        .subtitle { color: #8b949e; font-size: 1.2rem; margin-bottom: 40px; }
+
+        .card {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 25px;
+            text-align: left;
+            display: none; /* Скрыто по умолчанию */
+        }
+
+        .card.active { display: block; }
+
+        pre {
+            background: #000;
+            padding: 15px;
+            border-radius: 8px;
+            color: #7ee787;
+            overflow-x: auto;
+        }
+
+        .btn-download {
+            display: inline-block;
+            background-color: #238636;
+            color: white;
+            padding: 15px 30px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 20px;
+        }
+
+        .btn-download:hover { background-color: #2ea043; }
+    </style>
+</head>
+<body>
+
+    <nav>
+        <button class="tab-btn active" onclick="openTab(event, 'home')">Home</button>
+        <button class="tab-btn" onclick="openTab(event, 'download')">Download</button>
+        <button class="tab-btn" onclick="openTab(event, 'releases')">Releases</button>
+        <button class="tab-btn" onclick="openTab(event, 'examples')">Examples</button>
+    </nav>
+
+    <div class="container">
+        <div id="home" class="card active">
+            <h1>Brise Language</h1>
+            <p class="subtitle">A new programming language. No brackets. No mess. Only logic.</p>
+            <p>Brise — это интерпретируемый язык, созданный для тех, кто ценит чистоту кода. Написан на C++ в лаборатории Sikvilab.</p>
+        </div>
+
+        <div id="download" class="card">
+            <h2>Download Brise</h2>
+            <p>Версия: 0.1.1 Alpha</p>
+            <p>Система: Windows (x64)</p>
+            <a href="https://github.com/sikvilab/Brise/releases/latest" class="btn-download">Скачать установщик (.exe)</a>
+        </div>
+
+        <div id="releases" class="card">
+            <h2>Последние обновления</h2>
+            <ul>
+                <li><strong>v0.1.1 Alpha:</strong> Первый публичный релиз, команды say: и set:.</li>
+                <li><strong>v0.1.2 (Скоро):</strong> Математический модуль solve: и условия if:.</li>
+            </ul>
+        </div>
+
+        <div id="examples" class="card">
+            <h2>Примеры кода</h2>
+            <p>Вывод текста и переменные:</p>
+            <pre>
+say: "Hello from Sikvilab!"
+set: status = "Active"
+say: "System is (status)"
+            </pre>
+        </div>
+    </div>
+
+    <script>
+        // JS прямо тут — чтобы вкладки работали
+        function openTab(evt, tabName) {
+            var i, card, tablinks;
+            card = document.getElementsByClassName("card");
+            for (i = 0; i < card.length; i++) {
+                card[i].classList.remove("active");
+            }
+            tablinks = document.getElementsByClassName("tab-btn");
+            for (i = 0; i < tablinks.length; i++) {
+                tablinks[i].classList.remove("active");
+            }
+            document.getElementById(tabName).classList.add("active");
+            evt.currentTarget.classList.add("active");
+        }
+    </script>
+</body>
+</html>
