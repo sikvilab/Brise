@@ -1,5 +1,3 @@
-#include "libs/brise_math.h"
-#include "libs/brise_random.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -7,6 +5,11 @@
 #include <fstream>
 #include <regex>
 #include <sstream>
+#include <ctime>
+
+// Подключаем наши модули из папки libs
+#include "libs/brise_math.h"
+#include "libs/brise_random.h"
 
 std::map<std::string, std::string> vars;
 std::map<std::string, std::string> commands;
@@ -64,6 +67,30 @@ void execute(std::string line) {
         if (val.front() == '"' && val.back() == '"') val = val.substr(1, val.length() - 2);
         vars[name] = val;
     }
+    // --- НОВОЕ: Вызов библиотек из libs ---
+    else if (line.substr(0, 6) == "solve:") {
+        size_t s = line.find("\"") + 1;
+        size_t e = line.rfind("\"");
+        if (s != 0 && e != std::string::npos) {
+            BriseMath::solve_simple(line.substr(s, e - s), vars);
+        }
+    }
+    else if (line.substr(0, 7) == "random:") {
+        BriseRandom::quick_rand(line.substr(7), vars);
+    }
+    else if (line.substr(0, 3) == "if:") {
+        size_t eq = line.find("=");
+        size_t s_bracket = line.find("(");
+        size_t e_bracket = line.rfind(")");
+        if (eq != std::string::npos && s_bracket != std::string::npos) {
+            std::string var_name = trim(line.substr(3, eq - 3));
+            std::string target_val = trim(line.substr(eq + 1, s_bracket - eq - 1));
+            if (vars[var_name] == target_val) {
+                execute(line.substr(s_bracket + 1, e_bracket - s_bracket - 1));
+            }
+        }
+    }
+    // --- КОНЕЦ НОВЫХ КОМАНД ---
     else if (line.substr(0, 5) == "List:") {
         std::regex list_regex(R"(List:\s+(\w+)\s+\((.*)\))");
         std::smatch match;
@@ -98,18 +125,16 @@ void execute(std::string line) {
 }
 
 int main(int argc, char* argv[]) {
+    srand(time(0)); // Инициализация рандома
     if (argc < 2) {
-        std::cout << "brise v0.1.1 Alpha | Usage: brise <file.bri>" << std::endl;
+        std::cout << "brise v0.1.2 Alpha | Sikvilab" << std::endl;
+        std::cout << "Usage: brise <file.bri>" << std::endl;
         system("pause");
         return 0;
     }
-    
     run_file(argv[1]);
-
     std::cout << "\n----------------------------" << std::endl;
     std::cout << "Program finished." << std::endl;
     system("pause");
     return 0;
-
 }
-
