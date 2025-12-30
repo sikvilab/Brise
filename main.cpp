@@ -98,7 +98,7 @@ void execute(std::string line) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cout << "brise v0.1.1 Alpha | Usage: brise <file.bri>" << std::endl;
-        system("pause"); // Чтобы окно не закрылось, если запустить без аргументов
+        system("pause");
         return 0;
     }
     
@@ -106,6 +106,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\n----------------------------" << std::endl;
     std::cout << "Program finished." << std::endl;
-    system("pause"); // ТА САМАЯ ПАУЗА
+    system("pause");
     return 0;
+
 }
