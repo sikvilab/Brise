@@ -18,12 +18,13 @@ jobs:
         choco install mingw --version=12.2.0 -y
         echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $GITHUB_PATH
 
-    - name: Compile Brise
+    - name: Compile Brise (Static Linking)
       run: |
-        g++ -std=c++17 main.cpp interpreter.cpp -I./libs -o brise.exe
+        # Добавляем флаги статической линковки
+        g++ -std=c++17 main.cpp interpreter.cpp -I./libs -o brise.exe -static -static-libgcc -static-libstdc++
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: brise-windows-latest
+        name: brise-windows-standalone
         path: brise.exe
