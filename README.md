@@ -76,3 +76,7 @@ if: final > 80 (say:"Final price: (final)")
 ```brise
 set:name = "Разработчик"
 say:"Добро пожаловать в brise, (name)!"
+
+
+## 🌐 Website on GitHub
+If the landing page is not visible on GitHub, enable **GitHub Pages** in repository settings and use `index.html` from the root branch.

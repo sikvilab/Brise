@@ -80,21 +80,44 @@
         }
 
         .btn-download:hover { background-color: #2ea043; }
+
+        .meta-links {
+            margin-top: 20px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .meta-links a {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+
+        .release-pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border: 1px solid #30363d;
+            border-radius: 999px;
+            color: #8b949e;
+            font-size: 0.9rem;
+            margin-top: 8px;
+        }
     </style>
 </head>
 <body>
 
     <nav>
-        <button class="tab-btn active" onclick="openTab(event, 'home')">Home</button>
-        <button class="tab-btn" onclick="openTab(event, 'download')">Download</button>
-        <button class="tab-btn" onclick="openTab(event, 'releases')">Releases</button>
-        <button class="tab-btn" onclick="openTab(event, 'examples')">Examples</button>
+        <button class="tab-btn active" data-tab="home" onclick="openTab(event, 'home')">Home</button>
+        <button class="tab-btn" data-tab="download" onclick="openTab(event, 'download')">Download</button>
+        <button class="tab-btn" data-tab="releases" onclick="openTab(event, 'releases')">Releases</button>
+        <button class="tab-btn" data-tab="examples" onclick="openTab(event, 'examples')">Examples</button>
     </nav>
 
     <div class="container">
         <div id="home" class="card active">
             <h1>Brise Language</h1>
             <p class="subtitle">Brise v0.2.0 Alpha — lightweight scripting with cleaner syntax.</p>
+            <span class="release-pill">Latest: v0.2.0 Alpha</span>
             <p>Brise — интерпретируемый язык для быстрых скриптов и обучения. Написан на C++ в лаборатории Sikvilab.</p>
         </div>
 
@@ -139,8 +162,22 @@ if: final > 80 (say:"Final: (final)")
                 tablinks[i].classList.remove("active");
             }
             document.getElementById(tabName).classList.add("active");
-            evt.currentTarget.classList.add("active");
+            if (evt && evt.currentTarget) {
+                evt.currentTarget.classList.add("active");
+            } else {
+                var button = document.querySelector('.tab-btn[data-tab="' + tabName + '"]');
+                if (button) button.classList.add("active");
+            }
+            if (window.location.hash !== '#' + tabName) {
+                window.location.hash = tabName;
+            }
         }
+
+        window.addEventListener('DOMContentLoaded', function() {
+            var tab = window.location.hash ? window.location.hash.substring(1) : 'home';
+            if (!document.getElementById(tab)) tab = 'home';
+            openTab(null, tab);
+        });
     </script>
 </body>
 </html>
