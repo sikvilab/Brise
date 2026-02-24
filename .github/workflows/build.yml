@@ -2,7 +2,7 @@ name: Build Brise Interpreter
 
 on:
   push:
-    branches: [ "main", "t" ] # Следим за основной веткой и веткой 't'
+    branches: [ "main", "t" ]
   pull_request:
     branches: [ "main" ]
 
@@ -13,10 +13,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up GCC
-      uses: egor-tensin/setup-gcc@v1
+    # Правильный способ установки GCC на Windows через MinGW
+    - name: Set up MinGW
+      uses: egor-tensin/setup-mingw@v2
       with:
-        version: 12 # Свежая версия компилятора
+        platform: x64
 
     - name: Compile Brise
       run: |
