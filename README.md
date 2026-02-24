@@ -88,3 +88,7 @@ If the landing page is not visible on GitHub, enable **GitHub Pages** in reposit
 - `Environment` class encapsulates variables, commands, and lists.
 - Rich runtime diagnostics with `ErrorContext` (`[Error at line X in file]: ...`).
 - Command dispatcher now uses handler registry (no long `if-else` chain) and supports nested actions in `if:(...)`.
+- Added `query:` input command (`reply` variable + optional target variable).
+- Added text file I/O: `read:` and `write:` commands.
+- Added file execution cache: script is tokenized once and reused on next includes/runs in same session.
+

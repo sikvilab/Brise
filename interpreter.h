@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -76,9 +77,15 @@ private:
     using TokenList = std::vector<Token>;
     using Handler = std::function<void(const TokenList&, const ErrorContext&)>;
 
+    struct CompiledLine {
+        std::size_t line{0};
+        TokenList tokens;
+    };
+
     Lexer lexer_;
     Environment env_;
     std::unordered_map<std::string, Handler> handlers_;
+    std::unordered_map<std::string, std::vector<CompiledLine>> fileCache_;
 
     void registerHandlers();
 
@@ -95,6 +102,9 @@ private:
     void executeCommandDefinition(const TokenList& tokens, const ErrorContext& ctx);
     void executeRandom(const TokenList& tokens, const ErrorContext& ctx);
     void executeSolve(const TokenList& tokens, const ErrorContext& ctx);
+    void executeQuery(const TokenList& tokens, const ErrorContext& ctx);
+    void executeRead(const TokenList& tokens, const ErrorContext& ctx);
+    void executeWrite(const TokenList& tokens, const ErrorContext& ctx);
 
     [[nodiscard]] std::string interpolate(std::string text) const;
     [[nodiscard]] std::string valueToString(const Value& value) const;
@@ -109,6 +119,7 @@ private:
     [[nodiscard]] bool evaluateCondition(const TokenList& tokens, const ErrorContext& ctx);
     [[nodiscard]] std::size_t findMatchingRParen(const TokenList& tokens, std::size_t lParenPos, const ErrorContext& ctx) const;
     [[nodiscard]] TokenList tokenSlice(const TokenList& tokens, std::size_t begin, std::size_t endExclusive) const;
+    [[nodiscard]] std::pair<std::string, std::string> parseReadWriteTarget(const TokenList& tokens, const ErrorContext& ctx) const;
 
     [[noreturn]] void fail(const ErrorContext& ctx, const std::string& message) const;
 };
