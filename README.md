@@ -26,6 +26,20 @@ say:"Welcome to brise, (user)!"
 List: tools (Logic, Speed, Simplicity)
 Say to everyone:(say:"Feature: (item)")
 ```
+
+## 🚀 New in v0.2 (language extensions)
+* **`calc:` arithmetic expressions** with `+ - * /` and parentheses, including numeric variables.
+* **Extended `if:` conditions** with `==`, `!=`, `>`, `<`, `>=`, `<=` for numbers and text.
+* **Flexible `say:`** now supports either quoted text or raw text after `say:`.
+
+### Example
+```brise
+set:price = "120"
+set:discount = "15"
+calc:final = price - discount * 2
+if: final > 80 (say:"Final price: (final)")
+```
+
 ---
 # 🌉 brise Language (v0.1 Alpha)
 
