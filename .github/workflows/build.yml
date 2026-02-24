@@ -13,11 +13,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # Правильный способ установки GCC на Windows через MinGW
-    - name: Set up MinGW
-      uses: egor-tensin/setup-mingw@v2
-      with:
-        platform: x64
+    - name: Install GCC via Mingw
+      run: |
+        choco install mingw --version=12.2.0 -y
+        echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $GITHUB_PATH
 
     - name: Compile Brise
       run: |
