@@ -1,4 +1,4 @@
-# 🌉 brise Programming Language (v0.1 Alpha)
+# 🌉 brise Programming Language (v0.2.0 Alpha)
 
 **brise** is an ultra-lightweight interpreted programming language with a human-readable syntax. The name is inspired by the French word for "breeze": the language is fast, fresh, and free from unnecessary brackets or semicolons.
 
@@ -28,6 +28,13 @@ Say to everyone:(say:"Feature: (item)")
 ```
 
 ## 🚀 New in v0.2 (language extensions)
+
+## 📦 Release v0.2.0 Alpha
+- Added `calc:` expression evaluation with `+ - * /` and parentheses.
+- Extended `if:` with `==`, `!=`, `>`, `<`, `>=`, `<=`.
+- `say:` now supports both quoted and raw text modes.
+- See `examples/advanced_demo.bri` for a practical script sample.
+
 * **`calc:` arithmetic expressions** with `+ - * /` and parentheses, including numeric variables.
 * **Extended `if:` conditions** with `==`, `!=`, `>`, `<`, `>=`, `<=` for numbers and text.
 * **Flexible `say:`** now supports either quoted text or raw text after `say:`.
@@ -41,7 +48,7 @@ if: final > 80 (say:"Final price: (final)")
 ```
 
 ---
-# 🌉 brise Language (v0.1 Alpha)
+# 🌉 brise Language (v0.2.0 Alpha)
 
 **brise** — это сверхлёгкий интерпретируемый язык программирования с человекочитаемым синтаксисом. Название вдохновлено лёгким бризом: язык быстрый, свежий и не перегружен лишними скобками или точками с запятой.
 

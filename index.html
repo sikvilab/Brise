@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Brise Language | Sikvilab</title>
+    <title>Brise Language v0.2.0 | Sikvilab</title>
     <style>
         /* CSS прямо тут — для красоты */
         body {
@@ -94,13 +94,13 @@
     <div class="container">
         <div id="home" class="card active">
             <h1>Brise Language</h1>
-            <p class="subtitle">A new programming language. No brackets. No mess. Only logic.</p>
-            <p>Brise — это интерпретируемый язык, созданный для тех, кто ценит чистоту кода. Написан на C++ в лаборатории Sikvilab.</p>
+            <p class="subtitle">Brise v0.2.0 Alpha — lightweight scripting with cleaner syntax.</p>
+            <p>Brise — интерпретируемый язык для быстрых скриптов и обучения. Написан на C++ в лаборатории Sikvilab.</p>
         </div>
 
         <div id="download" class="card">
             <h2>Download Brise</h2>
-            <p>Версия: 0.1.1 Alpha</p>
+            <p>Версия: 0.2.0 Alpha</p>
             <p>Система: Windows (x64)</p>
             <a href="https://github.com/sikvilab/Brise/releases/latest" class="btn-download">Скачать установщик (.exe)</a>
         </div>
@@ -108,8 +108,9 @@
         <div id="releases" class="card">
             <h2>Последние обновления</h2>
             <ul>
-                <li><strong>v0.1.1 Alpha:</strong> Первый публичный релиз, команды say: и set:.</li>
-                <li><strong>v0.1.2 (Скоро):</strong> Математический модуль solve: и условия if:.</li>
+                <li><strong>v0.2.0 Alpha:</strong> Новый <code>calc:</code> для арифметики, расширенные условия <code>if:</code>, улучшенный <code>say:</code>.</li>
+                <li><strong>v0.1.2 Alpha:</strong> Команды <code>solve:</code> и <code>if:</code> добавлены в ядро.</li>
+                <li><strong>v0.1.1 Alpha:</strong> Первый публичный релиз, команды <code>say:</code> и <code>set:</code>.</li>
             </ul>
         </div>
 
@@ -117,9 +118,10 @@
             <h2>Примеры кода</h2>
             <p>Вывод текста и переменные:</p>
             <pre>
-say: "Hello from Sikvilab!"
-set: status = "Active"
-say: "System is (status)"
+set: price = "120"
+set: discount = "15"
+calc: final = price - discount * 2
+if: final > 80 (say:"Final: (final)")
             </pre>
         </div>
     </div>
