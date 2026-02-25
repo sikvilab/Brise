@@ -1,4 +1,4 @@
-# 🌉 brise Programming Language (v0.1 Alpha)
+# 🌉 brise Programming Language (v0.2.0 Alpha)
 
 **brise** is an ultra-lightweight interpreted programming language with a human-readable syntax. The name is inspired by the French word for "breeze": the language is fast, fresh, and free from unnecessary brackets or semicolons.
 
@@ -26,8 +26,29 @@ say:"Welcome to brise, (user)!"
 List: tools (Logic, Speed, Simplicity)
 Say to everyone:(say:"Feature: (item)")
 ```
+
+## 🚀 New in v0.2 (language extensions)
+
+## 📦 Release v0.2.0 Alpha
+- Added `calc:` expression evaluation with `+ - * /` and parentheses.
+- Extended `if:` with `==`, `!=`, `>`, `<`, `>=`, `<=`.
+- `say:` now supports both quoted and raw text modes.
+- See `examples/advanced_demo.bri` for a practical script sample.
+
+* **`calc:` arithmetic expressions** with `+ - * /` and parentheses, including numeric variables.
+* **Extended `if:` conditions** with `==`, `!=`, `>`, `<`, `>=`, `<=` for numbers and text.
+* **Flexible `say:`** now supports either quoted text or raw text after `say:`.
+
+### Example
+```brise
+set:price = "120"
+set:discount = "15"
+calc:final = price - discount * 2
+if: final > 80 (say:"Final price: (final)")
+```
+
 ---
-# 🌉 brise Language (v0.1 Alpha)
+# 🌉 brise Language (v0.2.0 Alpha)
 
 **brise** — это сверхлёгкий интерпретируемый язык программирования с человекочитаемым синтаксисом. Название вдохновлено лёгким бризом: язык быстрый, свежий и не перегружен лишними скобками или точками с запятой.
 
@@ -55,3 +76,26 @@ Say to everyone:(say:"Feature: (item)")
 ```brise
 set:name = "Разработчик"
 say:"Добро пожаловать в brise, (name)!"
+
+
+## 🌐 Website on GitHub
+If the landing page is not visible on GitHub, enable **GitHub Pages** in repository settings and use `index.html` from the root branch.
+
+
+## 🧱 Interpreter architecture (v0.3.0-dev)
+- Lexer-based tokenization (`KEYWORD`, `IDENTIFIER`, `STRING`, `NUMBER`, `OPERATOR`).
+- Strong value model via `std::variant<double, std::string, bool>`.
+- `Environment` class encapsulates variables, commands, and lists.
+- Rich runtime diagnostics with `ErrorContext` (`[Error at line X in file]: ...`).
+- Command dispatcher now uses handler registry (no long `if-else` chain) and supports nested actions in `if:(...)`.
+- Added `query:` input command (`reply` variable + optional target variable).
+- Added text file I/O: `read:` and `write:` commands.
+- Added file execution cache: script is tokenized once and reused on next includes/runs in same session.
+
+
+
+## 🛠 C core rewrite (v0.4.0-dev)
+- Interpreter runtime rewritten to **C** (`brise_runtime.c`) with manual memory management and C-style dispatch.
+- Launcher stays in **C++** (`main.cpp`) for convenient integration and future mixed-language embedding.
+- Added commands: `query:`, `read:`, `write:`.
+- Kept nested execution for `if` and `Say to everyone`.

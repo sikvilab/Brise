@@ -1,0 +1,17 @@
+// Advanced demo for Brise v0.2
+set:name = "Pro user"
+set:base = "10"
+set:mult = "3"
+
+calc:total = base * mult + 5
+say:"Hello, (name)!"
+say:"Total = (total)"
+
+if: total >= 30 (say:"Big enough")
+if: total < 30 (say:"Too small")
+
+random:1 5
+say:"Dice roll: (random)"
+
+solve:"7+8"
+say:"Legacy solve answer: (answer)"
