@@ -11,17 +11,21 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
     - name: Install GCC via Mingw
       run: |
-        choco install mingw --version=12.2.0 -y
+        choco install mingw -y
+        # Добавляем путь к компилятору в системный PATH для текущей сессии
         echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $GITHUB_PATH
 
     - name: Compile Brise (Static Linking)
       run: |
-        # Добавляем флаги статической линковки
-        g++ -std=c++17 main.cpp interpreter.cpp -I./libs -o brise.exe -static -static-libgcc -static-libstdc++
+        # Мы компилируем main.cpp и brise_runtime.c вместе.
+        # -I. говорит искать brise_runtime.h в текущей папке.
+        # Флаги -static убирают зависимость от внешних .dll (libstdc++ и libgcc).
+        g++ -std=c++17 main.cpp brise_runtime.c -I. -o brise.exe -static -static-libgcc -static-libstdc++
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
