@@ -99,3 +99,9 @@ If the landing page is not visible on GitHub, enable **GitHub Pages** in reposit
 - Launcher stays in **C++** (`main.cpp`) for convenient integration and future mixed-language embedding.
 - Added commands: `query:`, `read:`, `write:`.
 - Kept nested execution for `if` and `Say to everyone`.
+- Added `Call "LibraryName"` import style (e.g. `Call "Graph"`).
+- Added `else:` blocks for `if` (`if: condition (...) else:(...)`).
+- Added `Netwe:` HTTP fetch command (`Netwe:result("https://...")`).
+- Extended math operators with `%` and `^` for more numeric scenarios.
+- Added `Graph:` library commands for XP-style HTML UI prototyping (`window`, `label`, `button`, `render`).
+

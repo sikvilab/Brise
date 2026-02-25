@@ -54,6 +54,10 @@ struct BriseRuntime {
     size_t cache_count;
     size_t cache_capacity;
 
+    char* graph_title;
+    char* graph_elements;
+    int graph_enabled;
+
     char last_error[MAX_ERROR_LEN];
 };
 
@@ -204,7 +208,7 @@ static int token_push(BriseTokenArray* arr, BriseTokenType type, const char* tex
 }
 
 static int is_keyword(const char* w) {
-    const char* k[] = {"say","set","calc","if","Include","List","Command","random","solve","query","read","write","Say","to","everyone","true","false"};
+    const char* k[] = {"say","set","calc","if","else","Include","Call","List","Command","Graph","Netwe","random","solve","query","read","write","Say","to","everyone","true","false"};
     size_t n = sizeof(k)/sizeof(k[0]);
     for (size_t i=0;i<n;++i) if (strcmp(k[i], w)==0) return 1;
     return 0;
@@ -256,7 +260,7 @@ static BriseTokenArray tokenize_line(const char* line) {
             }
             continue;
         }
-        if (strchr("+-*/", c)) { char op[2]={c,0}; token_push(&out,TOK_OPERATOR,op); i++; continue; }
+        if (strchr("+-*/%^", c)) { char op[2]={c,0}; token_push(&out,TOK_OPERATOR,op); i++; continue; }
         i++;
     }
     token_push(&out, TOK_END, "");
@@ -332,6 +336,8 @@ static int parse_primary(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseE
     return 0;
 }
 
+static int parse_power(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out);
+
 static int parse_factor(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
     if (t->items[*p].type == TOK_OPERATOR && strcmp(t->items[*p].text, "-")==0) {
         (*p)++;
@@ -343,20 +349,47 @@ static int parse_factor(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseEr
     return parse_primary(rt,t,p,ctx,out);
 }
 
-static int parse_term(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
+static int parse_power(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
     if (!parse_factor(rt,t,p,ctx,out)) return 0;
-    while (t->items[*p].type == TOK_OPERATOR && (strcmp(t->items[*p].text,"*")==0 || strcmp(t->items[*p].text,"/")==0)) {
+    if (t->items[*p].type == TOK_OPERATOR && strcmp(t->items[*p].text,"^")==0) {
+        (*p)++;
+        BriseValue right;
+        if (!parse_power(rt,t,p,ctx,&right)) { free_value(out); return 0; }
+        double l,r;
+        if (!value_to_number(out,&l) || !value_to_number(&right,&r)) {
+            free_value(out); free_value(&right); set_error(rt,ctx,"Power expects numbers"); return 0;
+        }
+        free_value(out); free_value(&right);
+        double res = 1.0;
+        int exp = (int)r;
+        if (exp < 0) {
+            int e = -exp;
+            for (int i=0;i<e;i++) res *= l;
+            res = 1.0/res;
+        } else {
+            for (int i=0;i<exp;i++) res *= l;
+        }
+        *out = value_number(res);
+    }
+    return 1;
+}
+
+static int parse_term(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
+    if (!parse_power(rt,t,p,ctx,out)) return 0;
+    while (t->items[*p].type == TOK_OPERATOR && (strcmp(t->items[*p].text,"*")==0 || strcmp(t->items[*p].text,"/")==0 || strcmp(t->items[*p].text,"%")==0)) {
         char op = t->items[*p].text[0];
         (*p)++;
         BriseValue right;
-        if (!parse_factor(rt,t,p,ctx,&right)) { free_value(out); return 0; }
+        if (!parse_power(rt,t,p,ctx,&right)) { free_value(out); return 0; }
         double l,r;
         if (!value_to_number(out,&l) || !value_to_number(&right,&r)) {
             free_value(out); free_value(&right); set_error(rt,ctx,"Arithmetic expects numbers"); return 0;
         }
-        if (op=='/' && r==0.0) { free_value(out); free_value(&right); set_error(rt,ctx,"Division by zero"); return 0; }
+        if ((op=='/' || op=='%') && r==0.0) { free_value(out); free_value(&right); set_error(rt,ctx,"Division by zero"); return 0; }
         free_value(out); free_value(&right);
-        *out = value_number(op=='*' ? l*r : l/r);
+        if (op=='*') *out = value_number(l*r);
+        else if (op=='/') *out = value_number(l/r);
+        else { long long li=(long long)l; long long ri=(long long)r; *out = value_number((double)(li%ri)); }
     }
     return 1;
 }
@@ -454,6 +487,16 @@ static int eval_condition(BriseRuntime* rt, BriseTokenArray* cond, BriseErrorCon
     return 1;
 }
 
+static int append_text(char** dst, const char* text) {
+    size_t old = *dst ? strlen(*dst) : 0;
+    size_t add = strlen(text);
+    char* n = (char*)realloc(*dst, old + add + 1);
+    if (!n) return 0;
+    memcpy(n + old, text, add + 1);
+    *dst = n;
+    return 1;
+}
+
 static int execute_tokens(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx);
 
 static CommandEntry* find_command(BriseRuntime* rt, const char* name) {
@@ -539,11 +582,23 @@ static int execute_cmd_if(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
     BriseTokenArray cond = token_slice(tokens,2,lp);
     int pass=0;
     ok = eval_condition(rt,&cond,ctx,&pass); token_array_free(&cond); if(!ok) return 0;
-    if (!pass) return 1;
     BriseTokenArray act = token_slice(tokens,lp+1,rp);
-    ok = execute_tokens(rt,&act,ctx);
+    if (pass) {
+        ok = execute_tokens(rt,&act,ctx);
+        token_array_free(&act);
+        return ok;
+    }
     token_array_free(&act);
-    return ok;
+
+    if (rp + 4 < tokens->count && tokens->items[rp+1].type==TOK_KEYWORD && strcmp(tokens->items[rp+1].text,"else")==0 &&
+        tokens->items[rp+2].type==TOK_COLON && tokens->items[rp+3].type==TOK_LPAREN) {
+        int ok2=0; size_t erp = find_matching_rparen(rt,tokens,rp+3,ctx,&ok2); if(!ok2) return 0;
+        BriseTokenArray eact = token_slice(tokens,rp+4,erp);
+        ok = execute_tokens(rt,&eact,ctx);
+        token_array_free(&eact);
+        return ok;
+    }
+    return 1;
 }
 
 static int execute_cmd_include(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
@@ -715,6 +770,96 @@ static int execute_cmd_write(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     return 1;
 }
 
+static int execute_cmd_call(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
+    if (tokens->count < 2 || tokens->items[1].type != TOK_STRING) { set_error(rt,ctx,"Call expects string library name"); return 0; }
+    const char* lib = tokens->items[1].text;
+    if (strcmp(lib, "Graph") == 0) {
+        rt->graph_enabled = 1;
+        return 1;
+    }
+    char path[1024];
+    snprintf(path, sizeof(path), "libs/%s.bri", lib);
+    return brise_execute_file(rt, path);
+}
+
+static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
+    if (!rt->graph_enabled) { set_error(rt,ctx,"Graph library is not loaded. Use Call \"Graph\""); return 0; }
+    if (tokens->count < 6 || tokens->items[2].type != TOK_IDENTIFIER || tokens->items[3].type != TOK_LPAREN) {
+        set_error(rt,ctx,"Graph syntax: Graph:window(...), Graph:label(...), Graph:button(...), Graph:render(...)");
+        return 0;
+    }
+    int ok = 0;
+    size_t rp = find_matching_rparen(rt, tokens, 3, ctx, &ok);
+    if (!ok) return 0;
+    BriseTokenArray expr = token_slice(tokens, 4, rp);
+    size_t p = 0;
+    BriseValue v;
+    if (!parse_expression(rt, &expr, &p, ctx, &v)) { token_array_free(&expr); return 0; }
+    token_array_free(&expr);
+    char* txt = value_to_string_heap(&v);
+    free_value(&v);
+
+    if (strcmp(tokens->items[2].text, "window") == 0) {
+        free(rt->graph_title);
+        rt->graph_title = xstrdup(txt);
+    } else if (strcmp(tokens->items[2].text, "label") == 0) {
+        char row[2048];
+        snprintf(row, sizeof(row), "<div class=\"lbl\">%s</div>\n", txt);
+        if (!append_text(&rt->graph_elements, row)) { free(txt); set_error(rt,ctx,"Out of memory"); return 0; }
+    } else if (strcmp(tokens->items[2].text, "button") == 0) {
+        char row[2048];
+        snprintf(row, sizeof(row), "<button class=\"btn\">%s</button>\n", txt);
+        if (!append_text(&rt->graph_elements, row)) { free(txt); set_error(rt,ctx,"Out of memory"); return 0; }
+    } else if (strcmp(tokens->items[2].text, "render") == 0) {
+        const char* title = rt->graph_title ? rt->graph_title : "Graph Window";
+        const char* body = rt->graph_elements ? rt->graph_elements : "";
+        char out_path[1024];
+        const char* slash = strrchr(ctx.file, '/'); if(!slash) slash = strrchr(ctx.file, '\\');
+        if (slash) { size_t k=(size_t)(slash-ctx.file+1); memcpy(out_path,ctx.file,k); out_path[k]=0; strncat(out_path,txt,sizeof(out_path)-strlen(out_path)-1);} else snprintf(out_path,sizeof(out_path),"%s",txt);
+        FILE* f = fopen(out_path, "wb");
+        if (!f) { free(txt); set_error(rt,ctx,"Graph render cannot open target file"); return 0; }
+        fprintf(f, "<!doctype html><html><head><meta charset='utf-8'><title>%s</title><style>", title);
+        fprintf(f, "body{background:#008080;font-family:Tahoma;padding:40px}.win{width:520px;border:2px solid #000;background:#c0c0c0;box-shadow:4px 4px #404040}.title{background:#000080;color:#fff;padding:8px;font-weight:bold}.content{padding:14px}.btn{background:#c0c0c0;border:2px outset #fff;padding:6px 12px;margin-top:8px}.lbl{margin:6px 0}");
+        fprintf(f, "</style></head><body><div class='win'><div class='title'>%s</div><div class='content'>%s</div></div></body></html>", title, body);
+        fclose(f);
+    } else {
+        free(txt);
+        set_error(rt,ctx,"Unknown Graph method");
+        return 0;
+    }
+    free(txt);
+    return 1;
+}
+
+static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
+    size_t lp = 2;
+    const char* target = "netwe";
+    if (tokens->count>3 && tokens->items[2].type==TOK_IDENTIFIER && tokens->items[3].type==TOK_LPAREN) { target=tokens->items[2].text; lp=3; }
+    if (tokens->count<=lp || tokens->items[lp].type!=TOK_LPAREN) { set_error(rt,ctx,"Netwe expects (...) url"); return 0; }
+    int ok=0; size_t rp=find_matching_rparen(rt,tokens,lp,ctx,&ok); if(!ok) return 0;
+    BriseTokenArray expr = token_slice(tokens, lp+1, rp);
+    size_t p=0; BriseValue v;
+    if (!parse_expression(rt,&expr,&p,ctx,&v)) { token_array_free(&expr); return 0; }
+    token_array_free(&expr);
+    char* url = value_to_string_heap(&v);
+    free_value(&v);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "curl -L -s \"%s\"", url);
+    free(url);
+    FILE* pipe = popen(cmd, "r");
+    if (!pipe) { set_error(rt,ctx,"Netwe failed to start curl"); return 0; }
+    char* data = xstrdup("");
+    char buf[512];
+    while (fgets(buf, sizeof(buf), pipe)) {
+        if (!append_text(&data, buf)) { pclose(pipe); free(data); set_error(rt,ctx,"Out of memory"); return 0; }
+    }
+    pclose(pipe);
+    int rc = set_var(rt, target, value_string(data));
+    free(data);
+    return rc;
+}
+
 static int execute_tokens(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
     if (tokens->count==0 || tokens->items[0].type==TOK_END) return 1;
 
@@ -738,7 +883,13 @@ static int execute_tokens(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
         if (!strcmp(cmd,"query")) return execute_cmd_query(rt,tokens,ctx);
         if (!strcmp(cmd,"read")) return execute_cmd_read(rt,tokens,ctx);
         if (!strcmp(cmd,"write")) return execute_cmd_write(rt,tokens,ctx);
+        if (!strcmp(cmd,"Graph")) return execute_cmd_graph(rt,tokens,ctx);
+        if (!strcmp(cmd,"Netwe")) return execute_cmd_netwe(rt,tokens,ctx);
         set_error(rt,ctx,"Unknown command keyword"); return 0;
+    }
+
+    if (tokens->count>=2 && tokens->items[0].type==TOK_KEYWORD && strcmp(tokens->items[0].text,"Call")==0) {
+        return execute_cmd_call(rt,tokens,ctx);
     }
 
     if (tokens->items[0].type==TOK_IDENTIFIER || tokens->items[0].type==TOK_KEYWORD) {
@@ -776,6 +927,8 @@ void brise_runtime_destroy(BriseRuntime* rt) {
         free(rt->cache[i].lines);
     }
     free(rt->cache);
+    free(rt->graph_title);
+    free(rt->graph_elements);
     free(rt);
 }
 
