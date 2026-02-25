@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #define MAX_ERROR_LEN 512
 
@@ -802,32 +808,121 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     if (strcmp(tokens->items[2].text, "window") == 0) {
         free(rt->graph_title);
         rt->graph_title = xstrdup(txt);
-    } else if (strcmp(tokens->items[2].text, "label") == 0) {
+        free(txt);
+        return 1;
+    }
+    if (strcmp(tokens->items[2].text, "label") == 0 || strcmp(tokens->items[2].text, "button") == 0) {
         char row[2048];
-        snprintf(row, sizeof(row), "<div class=\"lbl\">%s</div>\n", txt);
-        if (!append_text(&rt->graph_elements, row)) { free(txt); set_error(rt,ctx,"Out of memory"); return 0; }
-    } else if (strcmp(tokens->items[2].text, "button") == 0) {
-        char row[2048];
-        snprintf(row, sizeof(row), "<button class=\"btn\">%s</button>\n", txt);
-        if (!append_text(&rt->graph_elements, row)) { free(txt); set_error(rt,ctx,"Out of memory"); return 0; }
-    } else if (strcmp(tokens->items[2].text, "render") == 0) {
-        const char* title = rt->graph_title ? rt->graph_title : "Graph Window";
-        const char* body = rt->graph_elements ? rt->graph_elements : "";
-        char out_path[1024];
-        const char* slash = strrchr(ctx.file, '/'); if(!slash) slash = strrchr(ctx.file, '\\');
-        if (slash) { size_t k=(size_t)(slash-ctx.file+1); memcpy(out_path,ctx.file,k); out_path[k]=0; strncat(out_path,txt,sizeof(out_path)-strlen(out_path)-1);} else snprintf(out_path,sizeof(out_path),"%s",txt);
-        FILE* f = fopen(out_path, "wb");
-        if (!f) { free(txt); set_error(rt,ctx,"Graph render cannot open target file"); return 0; }
-        fprintf(f, "<!doctype html><html><head><meta charset='utf-8'><title>%s</title><style>", title);
-        fprintf(f, "body{background:#008080;font-family:Tahoma;padding:40px}.win{width:520px;border:2px solid #000;background:#c0c0c0;box-shadow:4px 4px #404040}.title{background:#000080;color:#fff;padding:8px;font-weight:bold}.content{padding:14px}.btn{background:#c0c0c0;border:2px outset #fff;padding:6px 12px;margin-top:8px}.lbl{margin:6px 0}");
-        fprintf(f, "</style></head><body><div class='win'><div class='title'>%s</div><div class='content'>%s</div></div></body></html>", title, body);
-        fclose(f);
-    } else {
+        snprintf(row, sizeof(row), "%c:%s\n", strcmp(tokens->items[2].text, "label") == 0 ? 'L' : 'B', txt);
+        free(txt);
+        if (!append_text(&rt->graph_elements, row)) { set_error(rt,ctx,"Out of memory"); return 0; }
+        return 1;
+    }
+    if (strcmp(tokens->items[2].text, "render") != 0) {
         free(txt);
         set_error(rt,ctx,"Unknown Graph method");
         return 0;
     }
+
+    int window_ms = atoi(txt);
+    if (window_ms <= 0) window_ms = 2500;
     free(txt);
+
+    void* lib = dlopen("libSDL2-2.0.so.0", RTLD_NOW);
+    if (!lib) lib = dlopen("libSDL2.so", RTLD_NOW);
+    if (!lib) { set_error(rt,ctx,"SDL2 is not installed (Graph needs SDL2)"); return 0; }
+
+    typedef int (*SDL_Init_Fn)(unsigned int);
+    typedef void (*SDL_Quit_Fn)(void);
+    typedef void* (*SDL_CreateWindow_Fn)(const char*, int, int, int, int, unsigned int);
+    typedef void* (*SDL_CreateRenderer_Fn)(void*, int, unsigned int);
+    typedef int (*SDL_SetRenderDrawColor_Fn)(void*, unsigned char, unsigned char, unsigned char, unsigned char);
+    typedef int (*SDL_RenderClear_Fn)(void*);
+    typedef int (*SDL_RenderFillRect_Fn)(void*, const void*);
+    typedef void (*SDL_RenderPresent_Fn)(void*);
+    typedef int (*SDL_PollEvent_Fn)(void*);
+    typedef void (*SDL_Delay_Fn)(unsigned int);
+    typedef void (*SDL_DestroyRenderer_Fn)(void*);
+    typedef void (*SDL_DestroyWindow_Fn)(void*);
+
+    SDL_Init_Fn SDL_Init_p = (SDL_Init_Fn)dlsym(lib, "SDL_Init");
+    SDL_Quit_Fn SDL_Quit_p = (SDL_Quit_Fn)dlsym(lib, "SDL_Quit");
+    SDL_CreateWindow_Fn SDL_CreateWindow_p = (SDL_CreateWindow_Fn)dlsym(lib, "SDL_CreateWindow");
+    SDL_CreateRenderer_Fn SDL_CreateRenderer_p = (SDL_CreateRenderer_Fn)dlsym(lib, "SDL_CreateRenderer");
+    SDL_SetRenderDrawColor_Fn SDL_SetRenderDrawColor_p = (SDL_SetRenderDrawColor_Fn)dlsym(lib, "SDL_SetRenderDrawColor");
+    SDL_RenderClear_Fn SDL_RenderClear_p = (SDL_RenderClear_Fn)dlsym(lib, "SDL_RenderClear");
+    SDL_RenderFillRect_Fn SDL_RenderFillRect_p = (SDL_RenderFillRect_Fn)dlsym(lib, "SDL_RenderFillRect");
+    SDL_RenderPresent_Fn SDL_RenderPresent_p = (SDL_RenderPresent_Fn)dlsym(lib, "SDL_RenderPresent");
+    SDL_PollEvent_Fn SDL_PollEvent_p = (SDL_PollEvent_Fn)dlsym(lib, "SDL_PollEvent");
+    SDL_Delay_Fn SDL_Delay_p = (SDL_Delay_Fn)dlsym(lib, "SDL_Delay");
+    SDL_DestroyRenderer_Fn SDL_DestroyRenderer_p = (SDL_DestroyRenderer_Fn)dlsym(lib, "SDL_DestroyRenderer");
+    SDL_DestroyWindow_Fn SDL_DestroyWindow_p = (SDL_DestroyWindow_Fn)dlsym(lib, "SDL_DestroyWindow");
+
+    if (!SDL_Init_p || !SDL_Quit_p || !SDL_CreateWindow_p || !SDL_CreateRenderer_p || !SDL_SetRenderDrawColor_p ||
+        !SDL_RenderClear_p || !SDL_RenderFillRect_p || !SDL_RenderPresent_p || !SDL_PollEvent_p || !SDL_Delay_p ||
+        !SDL_DestroyRenderer_p || !SDL_DestroyWindow_p) {
+        dlclose(lib);
+        set_error(rt,ctx,"SDL2 symbols are missing");
+        return 0;
+    }
+
+    if (SDL_Init_p(0x00000020u) != 0) { dlclose(lib); set_error(rt,ctx,"SDL2 init failed"); return 0; }
+
+    const char* title = rt->graph_title ? rt->graph_title : "Graph";
+    void* win = SDL_CreateWindow_p(title, 100, 100, 640, 420, 0);
+    if (!win) { SDL_Quit_p(); dlclose(lib); set_error(rt,ctx,"SDL2 window creation failed"); return 0; }
+    void* ren = SDL_CreateRenderer_p(win, -1, 0);
+    if (!ren) { SDL_DestroyWindow_p(win); SDL_Quit_p(); dlclose(lib); set_error(rt,ctx,"SDL2 renderer creation failed"); return 0; }
+
+    typedef struct { int x,y,w,h; unsigned char r,g,b,a; } R;
+    R rect;
+
+    SDL_SetRenderDrawColor_p(ren, 0, 128, 128, 255);
+    SDL_RenderClear_p(ren);
+
+    rect.x=40; rect.y=40; rect.w=560; rect.h=320; rect.r=192; rect.g=192; rect.b=192; rect.a=255;
+    SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
+    SDL_RenderFillRect_p(ren, &rect);
+
+    rect.x=40; rect.y=40; rect.w=560; rect.h=30; rect.r=0; rect.g=0; rect.b=128; rect.a=255;
+    SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
+    SDL_RenderFillRect_p(ren, &rect);
+
+    int y = 90;
+    if (rt->graph_elements) {
+        char* copy = xstrdup(rt->graph_elements);
+        char* line = strtok(copy, "\n");
+        while (line) {
+            if (line[0] == 'L' && line[1] == ':') {
+                rect.x=70; rect.y=y; rect.w=300; rect.h=22; rect.r=230; rect.g=230; rect.b=230; rect.a=255;
+                SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
+                SDL_RenderFillRect_p(ren, &rect);
+                y += 30;
+            } else if (line[0] == 'B' && line[1] == ':') {
+                rect.x=70; rect.y=y; rect.w=140; rect.h=30; rect.r=192; rect.g=192; rect.b=192; rect.a=255;
+                SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
+                SDL_RenderFillRect_p(ren, &rect);
+                y += 40;
+            }
+            line = strtok(NULL, "\n");
+        }
+        free(copy);
+    }
+
+    SDL_RenderPresent_p(ren);
+
+    unsigned int elapsed = 0;
+    while (elapsed < (unsigned int)window_ms) {
+        unsigned char ev[56];
+        while (SDL_PollEvent_p(ev)) { (void)ev; }
+        SDL_Delay_p(16);
+        elapsed += 16;
+    }
+
+    SDL_DestroyRenderer_p(ren);
+    SDL_DestroyWindow_p(win);
+    SDL_Quit_p();
+    dlclose(lib);
     return 1;
 }
 
@@ -836,27 +931,96 @@ static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     const char* target = "netwe";
     if (tokens->count>3 && tokens->items[2].type==TOK_IDENTIFIER && tokens->items[3].type==TOK_LPAREN) { target=tokens->items[2].text; lp=3; }
     if (tokens->count<=lp || tokens->items[lp].type!=TOK_LPAREN) { set_error(rt,ctx,"Netwe expects (...) url"); return 0; }
+
     int ok=0; size_t rp=find_matching_rparen(rt,tokens,lp,ctx,&ok); if(!ok) return 0;
     BriseTokenArray expr = token_slice(tokens, lp+1, rp);
     size_t p=0; BriseValue v;
     if (!parse_expression(rt,&expr,&p,ctx,&v)) { token_array_free(&expr); return 0; }
     token_array_free(&expr);
+
     char* url = value_to_string_heap(&v);
     free_value(&v);
 
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "curl -L -s \"%s\"", url);
-    free(url);
-    FILE* pipe = popen(cmd, "r");
-    if (!pipe) { set_error(rt,ctx,"Netwe failed to start curl"); return 0; }
-    char* data = xstrdup("");
-    char buf[512];
-    while (fgets(buf, sizeof(buf), pipe)) {
-        if (!append_text(&data, buf)) { pclose(pipe); free(data); set_error(rt,ctx,"Out of memory"); return 0; }
+    const char* rest = url;
+    if (strncmp(rest, "http://", 7) == 0) rest += 7;
+    else if (strncmp(rest, "https://", 8) == 0) {
+        free(url);
+        set_error(rt,ctx,"Netwe socket client currently supports http:// only");
+        return 0;
     }
-    pclose(pipe);
-    int rc = set_var(rt, target, value_string(data));
-    free(data);
+
+    char host[256] = {0};
+    char path[1024] = "/";
+    int port = 80;
+
+    const char* slash = strchr(rest, '/');
+    const char* host_end = slash ? slash : rest + strlen(rest);
+    const char* colon = NULL;
+    for (const char* q = rest; q < host_end; ++q) if (*q == ':') { colon = q; break; }
+
+    if (colon) {
+        size_t hn = (size_t)(colon - rest);
+        if (hn >= sizeof(host)) hn = sizeof(host) - 1;
+        memcpy(host, rest, hn);
+        port = atoi(colon + 1);
+    } else {
+        size_t hn = (size_t)(host_end - rest);
+        if (hn >= sizeof(host)) hn = sizeof(host) - 1;
+        memcpy(host, rest, hn);
+    }
+
+    if (slash) {
+        size_t pn = strlen(slash);
+        if (pn >= sizeof(path)) pn = sizeof(path) - 1;
+        memcpy(path, slash, pn);
+        path[pn] = '\0';
+    }
+    free(url);
+
+    if (host[0] == '\0' || port <= 0) { set_error(rt,ctx,"Netwe invalid URL"); return 0; }
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_text[16];
+    snprintf(port_text, sizeof(port_text), "%d", port);
+
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host, port_text, &hints, &res) != 0) { set_error(rt,ctx,"Netwe DNS resolve failed"); return 0; }
+
+    int sock = -1;
+    for (struct addrinfo* it = res; it; it = it->ai_next) {
+        sock = (int)socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        if (sock < 0) continue;
+        if (connect(sock, it->ai_addr, it->ai_addrlen) == 0) break;
+        close(sock);
+        sock = -1;
+    }
+    freeaddrinfo(res);
+
+    if (sock < 0) { set_error(rt,ctx,"Netwe socket connect failed"); return 0; }
+
+    char req[2048];
+    snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: BriseNet/0.1\r\n\r\n", path, host);
+    ssize_t sent = send(sock, req, strlen(req), 0);
+    if (sent < 0) { close(sock); set_error(rt,ctx,"Netwe send failed"); return 0; }
+
+    char* response = xstrdup("");
+    char buf[1024];
+    while (1) {
+        ssize_t n = recv(sock, buf, sizeof(buf)-1, 0);
+        if (n <= 0) break;
+        buf[n] = '\0';
+        if (!append_text(&response, buf)) { close(sock); free(response); set_error(rt,ctx,"Out of memory"); return 0; }
+    }
+    close(sock);
+
+    char* body = strstr(response, "\r\n\r\n");
+    char* payload = body ? body + 4 : response;
+    int rc = set_var(rt, target, value_string(payload));
+    free(response);
     return rc;
 }
 

@@ -101,7 +101,10 @@ If the landing page is not visible on GitHub, enable **GitHub Pages** in reposit
 - Kept nested execution for `if` and `Say to everyone`.
 - Added `Call "LibraryName"` import style (e.g. `Call "Graph"`).
 - Added `else:` blocks for `if` (`if: condition (...) else:(...)`).
-- Added `Netwe:` HTTP fetch command (`Netwe:result("https://...")`).
+- Added `Netwe:` HTTP fetch command with a built-in socket client (`http://` URLs).
 - Extended math operators with `%` and `^` for more numeric scenarios.
-- Added `Graph:` library commands for XP-style HTML UI prototyping (`window`, `label`, `button`, `render`).
+- Added `Graph:` library commands for XP-style SDL2 window prototyping (`window`, `label`, `button`, `render`).
 
+
+- Netwe currently supports HTTP over raw sockets (`http://`); HTTPS/TLS is planned.
+- Graph uses SDL2 at runtime (requires SDL2 installed in the system).
