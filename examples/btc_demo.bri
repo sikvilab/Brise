@@ -5,6 +5,15 @@ SET:a = 5
 calc:b = a * 2 + 3
 say:a
 say:b
-if: b > 10 (say:"b is big") else:(say:"b is small")
-task:(say:"background task executed")
+if: b > 10 (
+    say:"b is big"
+) else:(
+    say:"b is small"
+)
+task:(
+    say:"background task executed"
+    if: 13 == 13 (
+        say:"nested block inside task"
+    )
+)
 say:"main code continues"

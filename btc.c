@@ -6,7 +6,6 @@
 #define MAX_LINE 2048
 #define MAX_SYMBOLS 512
 #define MAX_NAME 128
-#define MAX_TASKS 128
 
 typedef enum {
     SYM_NUMBER,
@@ -31,6 +30,7 @@ typedef struct {
     Buffer main_body;
     int task_count;
     int uses_tasks;
+    const char* input_path;
 } Compiler;
 
 static char* xstrdup(const char* s) {
@@ -142,6 +142,93 @@ static void strip_comment(char* line) {
     }
 }
 
+static char* read_source_without_comments(const char* path) {
+    FILE* in = fopen(path, "rb");
+    if (!in) return NULL;
+
+    Buffer source = {NULL, 0, 0};
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), in)) {
+        strip_comment(line);
+        if (!buffer_append(&source, line) || !buffer_append(&source, "\n")) {
+            fclose(in);
+            free(source.data);
+            return NULL;
+        }
+    }
+    fclose(in);
+    return source.data ? source.data : xstrdup("");
+}
+
+static char* find_matching_paren(char* open) {
+    int depth = 0;
+    int in_string = 0;
+    for (char* p = open; *p; ++p) {
+        if (*p == '"') in_string = !in_string;
+        if (in_string) continue;
+        if (*p == '(') depth++;
+        if (*p == ')') {
+            depth--;
+            if (depth == 0) return p;
+        }
+    }
+    return NULL;
+}
+
+static char* find_first_paren(char* s) {
+    int in_string = 0;
+    for (char* p = s; *p; ++p) {
+        if (*p == '"') in_string = !in_string;
+        if (!in_string && *p == '(') return p;
+    }
+    return NULL;
+}
+
+static char* find_top_level_colon(char* s) {
+    int in_string = 0;
+    int depth = 0;
+    for (char* p = s; *p; ++p) {
+        if (*p == '"') in_string = !in_string;
+        if (in_string) continue;
+        if (*p == '(') depth++;
+        else if (*p == ')' && depth > 0) depth--;
+        else if (*p == ':' && depth == 0) return p;
+    }
+    return NULL;
+}
+
+static char* next_statement(char** cursor) {
+    char* s = *cursor;
+    while (*s && isspace((unsigned char)*s)) s++;
+    if (*s == 0) {
+        *cursor = s;
+        return NULL;
+    }
+
+    int in_string = 0;
+    int depth = 0;
+    char* start = s;
+    for (; *s; ++s) {
+        if (*s == '"') in_string = !in_string;
+        if (!in_string) {
+            if (*s == '(') depth++;
+            else if (*s == ')' && depth > 0) depth--;
+            else if (*s == '\n' && depth == 0) {
+                char* lookahead = s + 1;
+                while (*lookahead && isspace((unsigned char)*lookahead)) lookahead++;
+                if (starts_with_ci(lookahead, "else:")) continue;
+                *s = 0;
+                *cursor = s + 1;
+                return trim(start);
+            }
+        }
+    }
+    *cursor = s;
+    return trim(start);
+}
+
+static int emit_block(Compiler* c, Buffer* out, const char* src);
+
 static int emit_say(Compiler* c, Buffer* out, const char* expr) {
     char tmp[MAX_LINE];
     snprintf(tmp, sizeof(tmp), "%s", expr);
@@ -164,11 +251,11 @@ static int emit_assignment(Compiler* c, Buffer* out, const char* rest) {
     char tmp[MAX_LINE];
     snprintf(tmp, sizeof(tmp), "%s", rest);
     char* eq = strchr(tmp, '=');
-    if (!eq) return buffer_append(out, "    /* BTC skipped invalid assignment */\n");
+    if (!eq) { fprintf(stderr, "BTC: invalid assignment in %s\n", c->input_path ? c->input_path : "<input>"); return 0; }
     *eq = 0;
     char* name = trim(tmp);
     char* expr = trim(eq + 1);
-    if (!is_identifier_text(name)) return buffer_append(out, "    /* BTC skipped invalid variable name */\n");
+    if (!is_identifier_text(name)) { fprintf(stderr, "BTC: invalid variable name in %s: %s\n", c->input_path ? c->input_path : "<input>", name); return 0; }
 
     Symbol* old = find_symbol(c, name);
     SymbolType type = is_string_literal(expr) ? SYM_STRING : SYM_NUMBER;
@@ -195,96 +282,131 @@ static char* find_else_ci(char* s) {
 }
 
 static int emit_if(Compiler* c, Buffer* out, const char* rest) {
-    char tmp[MAX_LINE];
-    snprintf(tmp, sizeof(tmp), "%s", rest);
-    char* open = strchr(tmp, '(');
-    char* close = open ? strchr(open, ')') : NULL;
-    if (!open || !close) return buffer_append(out, "    /* BTC skipped invalid if block */\n");
+    char* tmp = xstrdup(rest);
+    if (!tmp) return 0;
+    char* open = find_first_paren(tmp);
+    char* close = open ? find_matching_paren(open) : NULL;
+    if (!open || !close) {
+        fprintf(stderr, "BTC: invalid if block in %s\n", c->input_path ? c->input_path : "<input>");
+        free(tmp);
+        return 0;
+    }
+
     *open = 0;
     *close = 0;
     char* condition = trim(tmp);
     char* action = trim(open + 1);
 
-    if (!buffer_appendf(out, "    if (", condition, ") {\n")) return 0;
-    if (!emit_statement(c, out, action)) return 0;
-    if (!buffer_append(out, "    }")) return 0;
+    if (!buffer_appendf(out, "    if (", condition, ") {\n")) { free(tmp); return 0; }
+    if (!emit_block(c, out, action)) { free(tmp); return 0; }
+    if (!buffer_append(out, "    }")) { free(tmp); return 0; }
 
     char* else_pos = find_else_ci(close + 1);
     if (else_pos) {
-        char* else_open = strchr(else_pos, '(');
-        char* else_close = else_open ? strrchr(else_open, ')') : NULL;
-        if (else_open && else_close) {
-            *else_close = 0;
-            if (!buffer_append(out, " else {\n")) return 0;
-            if (!emit_statement(c, out, trim(else_open + 1))) return 0;
-            if (!buffer_append(out, "    }")) return 0;
+        char* else_open = find_first_paren(else_pos);
+        char* else_close = else_open ? find_matching_paren(else_open) : NULL;
+        if (!else_open || !else_close) {
+            fprintf(stderr, "BTC: invalid else block in %s\n", c->input_path ? c->input_path : "<input>");
+            free(tmp);
+            return 0;
         }
+        *else_close = 0;
+        if (!buffer_append(out, " else {\n")) { free(tmp); return 0; }
+        if (!emit_block(c, out, trim(else_open + 1))) { free(tmp); return 0; }
+        if (!buffer_append(out, "    }")) { free(tmp); return 0; }
     }
-    return buffer_append(out, "\n");
+    int ok = buffer_append(out, "\n");
+    free(tmp);
+    return ok;
 }
 
-static int emit_task(Compiler* c, const char* rest) {
-    char tmp[MAX_LINE];
-    snprintf(tmp, sizeof(tmp), "%s", rest);
-    char* open = strchr(tmp, '(');
-    char* close = open ? strrchr(open, ')') : NULL;
-    if (!open || !close) return buffer_append(&c->main_body, "    /* BTC skipped invalid task block */\n");
+static int emit_task(Compiler* c, Buffer* out, const char* rest) {
+    char* tmp = xstrdup(rest);
+    if (!tmp) return 0;
+    char* open = find_first_paren(tmp);
+    char* close = open ? find_matching_paren(open) : NULL;
+    if (!open || !close) {
+        fprintf(stderr, "BTC: invalid task block in %s\n", c->input_path ? c->input_path : "<input>");
+        free(tmp);
+        return 0;
+    }
     *close = 0;
 
     int id = c->task_count++;
     c->uses_tasks = 1;
     char header[128];
     snprintf(header, sizeof(header), "static void* brise_task_%d(void* unused) {\n    (void)unused;\n", id);
-    if (!buffer_append(&c->tasks, header)) return 0;
-    if (!emit_statement(c, &c->tasks, trim(open + 1))) return 0;
-    if (!buffer_append(&c->tasks, "    return NULL;\n}\n\n")) return 0;
+    if (!buffer_append(&c->tasks, header)) { free(tmp); return 0; }
+    if (!emit_block(c, &c->tasks, trim(open + 1))) { free(tmp); return 0; }
+    if (!buffer_append(&c->tasks, "    return NULL;\n}\n\n")) { free(tmp); return 0; }
 
     char call[256];
     snprintf(call, sizeof(call), "    pthread_t brise_task_thread_%d;\n    pthread_create(&brise_task_thread_%d, NULL, brise_task_%d, NULL);\n", id, id, id);
-    return buffer_append(&c->main_body, call);
+    int ok = buffer_append(out, call);
+    free(tmp);
+    return ok;
 }
 
 static int emit_statement(Compiler* c, Buffer* out, const char* src) {
-    char line[MAX_LINE];
-    snprintf(line, sizeof(line), "%s", src);
+    char* line = xstrdup(src);
+    if (!line) return 0;
     char* s = trim(line);
-    if (*s == 0) return 1;
+    if (*s == 0) { free(line); return 1; }
 
-    char* colon = strchr(s, ':');
-    if (!colon) return buffer_append(out, "    /* BTC skipped unsupported line */\n");
+    char* colon = find_top_level_colon(s);
+    if (!colon) {
+        fprintf(stderr, "BTC: unsupported syntax in %s: %s\n", c->input_path ? c->input_path : "<input>", s);
+        free(line);
+        return 0;
+    }
     *colon = 0;
     char keyword[64];
     lower_copy(keyword, sizeof(keyword), trim(s));
     char* rest = trim(colon + 1);
 
-    if (equals_ci(keyword, "say")) return emit_say(c, out, rest);
-    if (equals_ci(keyword, "set") || equals_ci(keyword, "calc")) return emit_assignment(c, out, rest);
-    if (equals_ci(keyword, "if")) return emit_if(c, out, rest);
-    return buffer_append(out, "    /* BTC skipped unsupported command */\n");
+    int ok = 0;
+    if (equals_ci(keyword, "say")) ok = emit_say(c, out, rest);
+    else if (equals_ci(keyword, "set") || equals_ci(keyword, "calc")) ok = emit_assignment(c, out, rest);
+    else if (equals_ci(keyword, "if")) ok = emit_if(c, out, rest);
+    else if (equals_ci(keyword, "task") || equals_ci(keyword, "async") || equals_ci(keyword, "run")) ok = emit_task(c, out, rest);
+    else {
+        fprintf(stderr, "BTC: unsupported command '%s' in %s (not silently skipped)\n", keyword, c->input_path ? c->input_path : "<input>");
+        ok = 0;
+    }
+
+    free(line);
+    return ok;
+}
+
+static int emit_block(Compiler* c, Buffer* out, const char* src) {
+    char* copy = xstrdup(src);
+    if (!copy) return 0;
+    char* cursor = copy;
+    char* stmt;
+    while ((stmt = next_statement(&cursor)) != NULL) {
+        if (*stmt == 0) continue;
+        if (!emit_statement(c, out, stmt)) {
+            free(copy);
+            return 0;
+        }
+    }
+    free(copy);
+    return 1;
 }
 
 static int compile_file(Compiler* c, const char* input_path, const char* c_path) {
-    FILE* in = fopen(input_path, "rb");
-    if (!in) {
+    c->input_path = input_path;
+    char* source = read_source_without_comments(input_path);
+    if (!source) {
         fprintf(stderr, "BTC: cannot open %s\n", input_path);
         return 0;
     }
 
-    char line[MAX_LINE];
-    while (fgets(line, sizeof(line), in)) {
-        strip_comment(line);
-        char copy[MAX_LINE];
-        snprintf(copy, sizeof(copy), "%s", line);
-        char* s = trim(copy);
-        if (*s == 0) continue;
-        if (starts_with_ci(s, "task:")) {
-            if (!emit_task(c, s + 5)) { fclose(in); return 0; }
-        } else if (!emit_statement(c, &c->main_body, s)) {
-            fclose(in);
-            return 0;
-        }
+    if (!emit_block(c, &c->main_body, source)) {
+        free(source);
+        return 0;
     }
-    fclose(in);
+    free(source);
 
     FILE* out = fopen(c_path, "wb");
     if (!out) {
