@@ -1,0 +1,10 @@
+// BTC preview demo: compile with `./btc examples/btc_demo.bri`.
+
+SAY:"BTC native demo"
+SET:a = 5
+calc:b = a * 2 + 3
+say:a
+say:b
+if: b > 10 (say:"b is big") else:(say:"b is small")
+task:(say:"background task executed")
+say:"main code continues"

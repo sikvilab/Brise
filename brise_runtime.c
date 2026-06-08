@@ -87,6 +87,15 @@ static void set_error(BriseRuntime* rt, BriseErrorContext ctx, const char* messa
     snprintf(rt->last_error, sizeof(rt->last_error), "[Error at line %zu in %s]: %s", ctx.line, ctx.file ? ctx.file : "<unknown>", message);
 }
 
+static int brise_streq_ci(const char* a, const char* b) {
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
 static void free_value(BriseValue* v) {
     if (v->type == BRISE_VAL_STRING && v->string_value) free(v->string_value);
     v->string_value = NULL;
@@ -216,7 +225,7 @@ static int token_push(BriseTokenArray* arr, BriseTokenType type, const char* tex
 static int is_keyword(const char* w) {
     const char* k[] = {"say","set","calc","if","else","Include","Call","List","Command","Graph","Netwe","random","solve","query","read","write","Say","to","everyone","true","false"};
     size_t n = sizeof(k)/sizeof(k[0]);
-    for (size_t i=0;i<n;++i) if (strcmp(k[i], w)==0) return 1;
+    for (size_t i=0;i<n;++i) if (brise_streq_ci(k[i], w)) return 1;
     return 0;
 }
 
@@ -324,8 +333,8 @@ static int parse_primary(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseE
         free(inter);
         (*p)++; return 1;
     }
-    if (tk->type == TOK_KEYWORD && (strcmp(tk->text,"true")==0 || strcmp(tk->text,"false")==0)) {
-        *out = value_bool(strcmp(tk->text,"true")==0); (*p)++; return 1;
+    if (tk->type == TOK_KEYWORD && (brise_streq_ci(tk->text,"true") || brise_streq_ci(tk->text,"false"))) {
+        *out = value_bool(brise_streq_ci(tk->text,"true")); (*p)++; return 1;
     }
     if (tk->type == TOK_IDENTIFIER || tk->type == TOK_KEYWORD) {
         const VarEntry* v = find_var_const(rt, tk->text);
@@ -596,7 +605,7 @@ static int execute_cmd_if(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
     }
     token_array_free(&act);
 
-    if (rp + 4 < tokens->count && tokens->items[rp+1].type==TOK_KEYWORD && strcmp(tokens->items[rp+1].text,"else")==0 &&
+    if (rp + 4 < tokens->count && tokens->items[rp+1].type==TOK_KEYWORD && brise_streq_ci(tokens->items[rp+1].text,"else") &&
         tokens->items[rp+2].type==TOK_COLON && tokens->items[rp+3].type==TOK_LPAREN) {
         int ok2=0; size_t erp = find_matching_rparen(rt,tokens,rp+3,ctx,&ok2); if(!ok2) return 0;
         BriseTokenArray eact = token_slice(tokens,rp+4,erp);
@@ -805,20 +814,20 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     char* txt = value_to_string_heap(&v);
     free_value(&v);
 
-    if (strcmp(tokens->items[2].text, "window") == 0) {
+    if (brise_streq_ci(tokens->items[2].text, "window")) {
         free(rt->graph_title);
         rt->graph_title = xstrdup(txt);
         free(txt);
         return 1;
     }
-    if (strcmp(tokens->items[2].text, "label") == 0 || strcmp(tokens->items[2].text, "button") == 0) {
+    if (brise_streq_ci(tokens->items[2].text, "label") || brise_streq_ci(tokens->items[2].text, "button")) {
         char row[2048];
-        snprintf(row, sizeof(row), "%c:%s\n", strcmp(tokens->items[2].text, "label") == 0 ? 'L' : 'B', txt);
+        snprintf(row, sizeof(row), "%c:%s\n", brise_streq_ci(tokens->items[2].text, "label") ? 'L' : 'B', txt);
         free(txt);
         if (!append_text(&rt->graph_elements, row)) { set_error(rt,ctx,"Out of memory"); return 0; }
         return 1;
     }
-    if (strcmp(tokens->items[2].text, "render") != 0) {
+    if (!brise_streq_ci(tokens->items[2].text, "render")) {
         free(txt);
         set_error(rt,ctx,"Unknown Graph method");
         return 0;
@@ -1027,32 +1036,32 @@ static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
 static int execute_tokens(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
     if (tokens->count==0 || tokens->items[0].type==TOK_END) return 1;
 
-    if (tokens->count>=4 && tokens->items[0].type==TOK_KEYWORD && strcmp(tokens->items[0].text,"Say")==0 &&
-        tokens->items[1].type==TOK_KEYWORD && strcmp(tokens->items[1].text,"to")==0 &&
-        tokens->items[2].type==TOK_KEYWORD && strcmp(tokens->items[2].text,"everyone")==0 && tokens->items[3].type==TOK_COLON) {
+    if (tokens->count>=4 && tokens->items[0].type==TOK_KEYWORD && brise_streq_ci(tokens->items[0].text,"Say") &&
+        tokens->items[1].type==TOK_KEYWORD && brise_streq_ci(tokens->items[1].text,"to") &&
+        tokens->items[2].type==TOK_KEYWORD && brise_streq_ci(tokens->items[2].text,"everyone") && tokens->items[3].type==TOK_COLON) {
         return execute_cmd_loop(rt,tokens,ctx);
     }
 
     if (tokens->count>=3 && tokens->items[0].type==TOK_KEYWORD && tokens->items[1].type==TOK_COLON) {
         const char* cmd = tokens->items[0].text;
-        if (!strcmp(cmd,"say")) return execute_cmd_say(rt,tokens,ctx);
-        if (!strcmp(cmd,"set")) return execute_cmd_set(rt,tokens,ctx,0);
-        if (!strcmp(cmd,"calc")) return execute_cmd_set(rt,tokens,ctx,1);
-        if (!strcmp(cmd,"if")) return execute_cmd_if(rt,tokens,ctx);
-        if (!strcmp(cmd,"Include")) return execute_cmd_include(rt,tokens,ctx);
-        if (!strcmp(cmd,"List")) return execute_cmd_list(rt,tokens,ctx);
-        if (!strcmp(cmd,"Command")) return execute_cmd_command(rt,tokens,ctx);
-        if (!strcmp(cmd,"random")) return execute_cmd_random(rt,tokens,ctx);
-        if (!strcmp(cmd,"solve")) return execute_cmd_solve(rt,tokens,ctx);
-        if (!strcmp(cmd,"query")) return execute_cmd_query(rt,tokens,ctx);
-        if (!strcmp(cmd,"read")) return execute_cmd_read(rt,tokens,ctx);
-        if (!strcmp(cmd,"write")) return execute_cmd_write(rt,tokens,ctx);
-        if (!strcmp(cmd,"Graph")) return execute_cmd_graph(rt,tokens,ctx);
-        if (!strcmp(cmd,"Netwe")) return execute_cmd_netwe(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"say")) return execute_cmd_say(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"set")) return execute_cmd_set(rt,tokens,ctx,0);
+        if (brise_streq_ci(cmd,"calc")) return execute_cmd_set(rt,tokens,ctx,1);
+        if (brise_streq_ci(cmd,"if")) return execute_cmd_if(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"Include")) return execute_cmd_include(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"List")) return execute_cmd_list(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"Command")) return execute_cmd_command(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"random")) return execute_cmd_random(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"solve")) return execute_cmd_solve(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"query")) return execute_cmd_query(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"read")) return execute_cmd_read(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"write")) return execute_cmd_write(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"Graph")) return execute_cmd_graph(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"Netwe")) return execute_cmd_netwe(rt,tokens,ctx);
         set_error(rt,ctx,"Unknown command keyword"); return 0;
     }
 
-    if (tokens->count>=2 && tokens->items[0].type==TOK_KEYWORD && strcmp(tokens->items[0].text,"Call")==0) {
+    if (tokens->count>=2 && tokens->items[0].type==TOK_KEYWORD && brise_streq_ci(tokens->items[0].text,"Call")) {
         return execute_cmd_call(rt,tokens,ctx);
     }
 

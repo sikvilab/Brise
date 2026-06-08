@@ -108,3 +108,11 @@ If the landing page is not visible on GitHub, enable **GitHub Pages** in reposit
 
 - Netwe currently supports HTTP over raw sockets (`http://`); HTTPS/TLS is planned.
 - Graph uses SDL2 at runtime (requires SDL2 installed in the system).
+
+## ⚙️ BTC preview (Brise To C)
+- Added `btc.c`, a standalone preview compiler/transpiler for simple Brise scripts.
+- Usage: `gcc btc.c -o btc`, then `./btc main.bri` to generate `main.c` and build a native binary with `gcc`.
+- Supported in this preview: `set:`, `calc:`, `say:`, one-line `if: ... (...) else:(...)`, and one-line `task:(...)` blocks.
+- `task:` blocks are emitted as `pthread` worker functions in generated C, so compiled scripts can start background work while the main program continues.
+- BTC and the C runtime now treat built-in command keywords case-insensitively, so `say:`, `Say:`, and `SAY:` are accepted as the same command.
+- HTTPS/TLS for `Netwe:`, automatic SDL2 bundling for `Graph:`, and deeper generated-code memory management remain planned follow-ups.
