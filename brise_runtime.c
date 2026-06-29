@@ -17,10 +17,56 @@
 typedef SOCKET BriseSocket;
 typedef int BriseIoSize;
 #define BRISE_INVALID_SOCKET INVALID_SOCKET
-#define brise_close_socket closesocket
 #define brise_dlopen(name) ((void*)LoadLibraryA(name))
 #define brise_dlsym(handle, name) ((void*)GetProcAddress((HMODULE)(handle), name))
 #define brise_dlclose(handle) FreeLibrary((HMODULE)(handle))
+
+typedef int (WSAAPI *BriseWSAStartupFn)(WORD, LPWSADATA);
+typedef int (WSAAPI *BriseWSACleanupFn)(void);
+typedef int (WSAAPI *BriseGetAddrInfoFn)(PCSTR, PCSTR, const ADDRINFOA*, PADDRINFOA*);
+typedef void (WSAAPI *BriseFreeAddrInfoFn)(PADDRINFOA);
+typedef SOCKET (WSAAPI *BriseSocketFn)(int, int, int);
+typedef int (WSAAPI *BriseConnectFn)(SOCKET, const struct sockaddr*, int);
+typedef int (WSAAPI *BriseCloseSocketFn)(SOCKET);
+typedef int (WSAAPI *BriseSendFn)(SOCKET, const char*, int, int);
+typedef int (WSAAPI *BriseRecvFn)(SOCKET, char*, int, int);
+
+static HMODULE brise_ws2_handle = NULL;
+static BriseWSAStartupFn brise_wsa_startup_p = NULL;
+static BriseWSACleanupFn brise_wsa_cleanup_p = NULL;
+static BriseGetAddrInfoFn brise_getaddrinfo_p = NULL;
+static BriseFreeAddrInfoFn brise_freeaddrinfo_p = NULL;
+static BriseSocketFn brise_socket_p = NULL;
+static BriseConnectFn brise_connect_p = NULL;
+static BriseCloseSocketFn brise_close_socket_p = NULL;
+static BriseSendFn brise_send_p = NULL;
+static BriseRecvFn brise_recv_p = NULL;
+
+static int brise_load_winsock(void) {
+    if (brise_ws2_handle) return 1;
+    brise_ws2_handle = LoadLibraryA("ws2_32.dll");
+    if (!brise_ws2_handle) return 0;
+    brise_wsa_startup_p = (BriseWSAStartupFn)GetProcAddress(brise_ws2_handle, "WSAStartup");
+    brise_wsa_cleanup_p = (BriseWSACleanupFn)GetProcAddress(brise_ws2_handle, "WSACleanup");
+    brise_getaddrinfo_p = (BriseGetAddrInfoFn)GetProcAddress(brise_ws2_handle, "getaddrinfo");
+    brise_freeaddrinfo_p = (BriseFreeAddrInfoFn)GetProcAddress(brise_ws2_handle, "freeaddrinfo");
+    brise_socket_p = (BriseSocketFn)GetProcAddress(brise_ws2_handle, "socket");
+    brise_connect_p = (BriseConnectFn)GetProcAddress(brise_ws2_handle, "connect");
+    brise_close_socket_p = (BriseCloseSocketFn)GetProcAddress(brise_ws2_handle, "closesocket");
+    brise_send_p = (BriseSendFn)GetProcAddress(brise_ws2_handle, "send");
+    brise_recv_p = (BriseRecvFn)GetProcAddress(brise_ws2_handle, "recv");
+    return brise_wsa_startup_p && brise_wsa_cleanup_p && brise_getaddrinfo_p && brise_freeaddrinfo_p &&
+           brise_socket_p && brise_connect_p && brise_close_socket_p && brise_send_p && brise_recv_p;
+}
+#define brise_wsa_startup(version, data) brise_wsa_startup_p((version), (data))
+#define brise_wsa_cleanup() brise_wsa_cleanup_p()
+#define brise_getaddrinfo(node, service, hints, res) brise_getaddrinfo_p((node), (service), (hints), (res))
+#define brise_freeaddrinfo(res) brise_freeaddrinfo_p((res))
+#define brise_socket(af, type, protocol) brise_socket_p((af), (type), (protocol))
+#define brise_connect(sock, addr, len) brise_connect_p((sock), (addr), (len))
+#define brise_close_socket(sock) brise_close_socket_p((sock))
+#define brise_send(sock, buf, len, flags) brise_send_p((sock), (buf), (len), (flags))
+#define brise_recv(sock, buf, len, flags) brise_recv_p((sock), (buf), (len), (flags))
 #else
 #include <dlfcn.h>
 #include <netdb.h>
@@ -34,6 +80,12 @@ typedef ssize_t BriseIoSize;
 #define brise_dlopen(name) dlopen((name), RTLD_NOW)
 #define brise_dlsym(handle, name) dlsym((handle), (name))
 #define brise_dlclose(handle) dlclose(handle)
+#define brise_getaddrinfo getaddrinfo
+#define brise_freeaddrinfo freeaddrinfo
+#define brise_socket socket
+#define brise_connect connect
+#define brise_send send
+#define brise_recv recv
 #endif
 
 #define MAX_ERROR_LEN 512
@@ -1015,7 +1067,8 @@ static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
 
 #ifdef _WIN32
     WSADATA wsa_data;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) { set_error(rt,ctx,"Netwe WinSock startup failed"); return 0; }
+    if (!brise_load_winsock()) { set_error(rt,ctx,"Netwe WinSock library load failed"); return 0; }
+    if (brise_wsa_startup(MAKEWORD(2, 2), &wsa_data) != 0) { set_error(rt,ctx,"Netwe WinSock startup failed"); return 0; }
 #endif
 
     struct addrinfo hints;
@@ -1027,54 +1080,54 @@ static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     snprintf(port_text, sizeof(port_text), "%d", port);
 
     struct addrinfo* res = NULL;
-    if (getaddrinfo(host, port_text, &hints, &res) != 0) {
+    if (brise_getaddrinfo(host, port_text, &hints, &res) != 0) {
 #ifdef _WIN32
-        WSACleanup();
+        brise_wsa_cleanup();
 #endif
         set_error(rt,ctx,"Netwe DNS resolve failed"); return 0;
     }
 
     BriseSocket sock = BRISE_INVALID_SOCKET;
     for (struct addrinfo* it = res; it; it = it->ai_next) {
-        sock = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        sock = brise_socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         if (sock == BRISE_INVALID_SOCKET) continue;
-        if (connect(sock, it->ai_addr, (int)it->ai_addrlen) == 0) break;
+        if (brise_connect(sock, it->ai_addr, (int)it->ai_addrlen) == 0) break;
         brise_close_socket(sock);
         sock = BRISE_INVALID_SOCKET;
     }
-    freeaddrinfo(res);
+    brise_freeaddrinfo(res);
 
     if (sock == BRISE_INVALID_SOCKET) {
 #ifdef _WIN32
-        WSACleanup();
+        brise_wsa_cleanup();
 #endif
         set_error(rt,ctx,"Netwe socket connect failed"); return 0;
     }
 
     char req[2048];
     snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: BriseNet/0.1\r\n\r\n", path, host);
-    BriseIoSize sent = (BriseIoSize)send(sock, req, (int)strlen(req), 0);
+    BriseIoSize sent = (BriseIoSize)brise_send(sock, req, (int)strlen(req), 0);
     if (sent < 0) { brise_close_socket(sock);
 #ifdef _WIN32
-        WSACleanup();
+        brise_wsa_cleanup();
 #endif
         set_error(rt,ctx,"Netwe send failed"); return 0; }
 
     char* response = xstrdup("");
     char buf[1024];
     while (1) {
-        BriseIoSize n = (BriseIoSize)recv(sock, buf, (int)sizeof(buf)-1, 0);
+        BriseIoSize n = (BriseIoSize)brise_recv(sock, buf, (int)sizeof(buf)-1, 0);
         if (n <= 0) break;
         buf[n] = '\0';
         if (!append_text(&response, buf)) { brise_close_socket(sock); free(response);
 #ifdef _WIN32
-            WSACleanup();
+            brise_wsa_cleanup();
 #endif
             set_error(rt,ctx,"Out of memory"); return 0; }
     }
     brise_close_socket(sock);
 #ifdef _WIN32
-    WSACleanup();
+    brise_wsa_cleanup();
 #endif
 
     char* body = strstr(response, "\r\n\r\n");
