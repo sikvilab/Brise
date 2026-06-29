@@ -1,4 +1,4 @@
-# 🌉 brise Programming Language (v0.1 Alpha)
+# 🌉 brise Programming Language (v0.2.0 Alpha)
 
 **brise** is an ultra-lightweight interpreted programming language with a human-readable syntax. The name is inspired by the French word for "breeze": the language is fast, fresh, and free from unnecessary brackets or semicolons.
 
@@ -26,8 +26,29 @@ say:"Welcome to brise, (user)!"
 List: tools (Logic, Speed, Simplicity)
 Say to everyone:(say:"Feature: (item)")
 ```
+
+## 🚀 New in v0.2 (language extensions)
+
+## 📦 Release v0.2.0 Alpha
+- Added `calc:` expression evaluation with `+ - * /` and parentheses.
+- Extended `if:` with `==`, `!=`, `>`, `<`, `>=`, `<=`.
+- `say:` now supports both quoted and raw text modes.
+- See `examples/advanced_demo.bri` for a practical script sample.
+
+* **`calc:` arithmetic expressions** with `+ - * /` and parentheses, including numeric variables.
+* **Extended `if:` conditions** with `==`, `!=`, `>`, `<`, `>=`, `<=` for numbers and text.
+* **Flexible `say:`** now supports either quoted text or raw text after `say:`.
+
+### Example
+```brise
+set:price = "120"
+set:discount = "15"
+calc:final = price - discount * 2
+if: final > 80 (say:"Final price: (final)")
+```
+
 ---
-# 🌉 brise Language (v0.1 Alpha)
+# 🌉 brise Language (v0.2.0 Alpha)
 
 **brise** — это сверхлёгкий интерпретируемый язык программирования с человекочитаемым синтаксисом. Название вдохновлено лёгким бризом: язык быстрый, свежий и не перегружен лишними скобками или точками с запятой.
 
@@ -55,3 +76,53 @@ Say to everyone:(say:"Feature: (item)")
 ```brise
 set:name = "Разработчик"
 say:"Добро пожаловать в brise, (name)!"
+
+
+## 🌐 Website on GitHub
+If the landing page is not visible on GitHub, enable **GitHub Pages** in repository settings and use `index.html` from the root branch.
+
+
+## 🧱 Interpreter architecture (v0.3.0-dev)
+- Lexer-based tokenization (`KEYWORD`, `IDENTIFIER`, `STRING`, `NUMBER`, `OPERATOR`).
+- Strong value model via `std::variant<double, std::string, bool>`.
+- `Environment` class encapsulates variables, commands, and lists.
+- Rich runtime diagnostics with `ErrorContext` (`[Error at line X in file]: ...`).
+- Command dispatcher now uses handler registry (no long `if-else` chain) and supports nested actions in `if:(...)`.
+- Added `query:` input command (`reply` variable + optional target variable).
+- Added text file I/O: `read:` and `write:` commands.
+- Added file execution cache: script is tokenized once and reused on next includes/runs in same session.
+
+
+
+## 🛠 C core rewrite (v0.4.0-dev)
+- Interpreter runtime rewritten to **C** (`brise_runtime.c`) with manual memory management and C-style dispatch.
+- Launcher stays in **C++** (`main.cpp`) for convenient integration and future mixed-language embedding.
+- Added commands: `query:`, `read:`, `write:`.
+- Kept nested execution for `if` and `Say to everyone`.
+- Added `Call "LibraryName"` import style (e.g. `Call "Graph"`).
+- Added `else:` blocks for `if` (`if: condition (...) else:(...)`).
+- Added `Netwe:` HTTP fetch command with a built-in socket client (`http://` URLs).
+- Extended math operators with `%` and `^` for more numeric scenarios.
+- Added `Graph:` library commands for XP-style SDL2 window prototyping (`window`, `label`, `button`, `render`).
+
+
+- Netwe currently supports HTTP over raw sockets (`http://`); HTTPS/TLS is planned.
+- Graph uses SDL2 at runtime (requires SDL2 installed in the system).
+
+## ⚙️ BTC preview (Brise To C)
+- Added `btc.c`, a standalone preview compiler/transpiler for simple Brise scripts.
+- Usage: `gcc btc.c -o btc`, then `./btc main.bri` to generate `main.c` and build a native binary with `gcc`.
+- Supported in this preview: `set:`, `calc:`, `say:`, multi-line `if: ... (...) else:(...)`, multi-line `task:(...)`, `include:`/`import:`, and simple numeric array literals (`set:list = [1, 2, 3]`).
+- `include:`/`import:` resolve quoted paths relative to the current `.bri` file and compile the imported file through the same block emitter.
+- `task:` blocks are emitted as `pthread` worker functions in generated C, so compiled scripts can start background work while the main program continues; task scopes are isolated from the main scope to avoid accidental C redeclarations.
+- BTC and the C runtime now treat built-in command keywords case-insensitively, so `say:`, `Say:`, and `SAY:` are accepted as the same command.
+- Unsupported commands such as `Graph:` and `Netwe:` now stop BTC with a clear file/line error instead of being silently skipped; HTTPS/TLS for `Netwe:`, automatic SDL2 bundling for `Graph:`, package management, and deeper generated-code memory management remain planned follow-ups.
+
+### Windows build note
+When building Brise on Windows, compile the C++ launcher and C runtime together and link WinSock for `Netwe:`:
+
+```powershell
+g++ -std=c++11 main.cpp brise_runtime.c -lws2_32 -o brise.exe
+```
+
+`Graph:` loads `SDL2.dll` dynamically on Windows, so no `dlfcn.h` or `-ldl` dependency is required there.

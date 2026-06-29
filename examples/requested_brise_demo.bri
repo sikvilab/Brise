@@ -1,0 +1,26 @@
+// Demo script requested by user for brise v0.4.0-dev
+
+say:"=== brise demo ==="
+
+set:name = "Developer"
+query:who("Your name?")
+if: who != "" (set:name = who)
+
+calc:a = 12
+calc:b = 5
+calc:sum = a + b
+calc:pow = a ^ 2
+calc:mod = a % b
+
+say:"Hello, (name)!"
+say:"a=(a), b=(b), sum=(sum), a^2=(pow), a%b=(mod)"
+if: sum > 10 (say:"sum > 10") else:(say:"sum <= 10")
+
+write:("demo_output.txt", "User=(name), sum=(sum)")
+read:saved("demo_output.txt")
+say:"Saved line: (saved)"
+
+List: stack (Parser, Runtime, Netwe)
+Say to everyone:(say:item)
+
+say:"=== end ==="
