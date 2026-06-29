@@ -119,6 +119,64 @@ typedef struct {
     size_t capacity;
 } FileCacheEntry;
 
+typedef int (*BriseSDLSetRenderDrawColorFn)(void*, unsigned char, unsigned char, unsigned char, unsigned char);
+typedef int (*BriseSDLRenderFillRectFn)(void*, const void*);
+
+typedef struct {
+    int x;
+    int y;
+    int w;
+    int h;
+} BriseGraphRect;
+
+static const unsigned char* brise_graph_glyph(char c) {
+    static const unsigned char unknown[7] = {14,17,1,2,4,0,4};
+    static const unsigned char space[7] = {0,0,0,0,0,0,0};
+    static const unsigned char glyphs[36][7] = {
+        {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30}, {14,17,16,16,16,17,14}, {30,17,17,17,17,17,30},
+        {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16}, {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17},
+        {14,4,4,4,4,4,14}, {7,2,2,2,2,18,12}, {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+        {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17}, {14,17,17,17,17,17,14}, {30,17,17,30,16,16,16},
+        {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17}, {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4},
+        {17,17,17,17,17,17,14}, {17,17,17,17,17,10,4}, {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+        {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31}, {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14},
+        {14,17,1,2,4,8,31}, {30,1,1,14,1,1,30}, {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+        {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8}, {14,17,17,14,17,17,14}, {14,17,17,15,1,1,14}
+    };
+    static const unsigned char colon[7] = {0,4,4,0,4,4,0};
+    static const unsigned char dash[7] = {0,0,0,31,0,0,0};
+    static const unsigned char dot[7] = {0,0,0,0,0,4,4};
+    static const unsigned char bang[7] = {4,4,4,4,4,0,4};
+    static const unsigned char question[7] = {14,17,1,2,4,0,4};
+    if (c == ' ') return space;
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c >= 'A' && c <= 'Z') return glyphs[c - 'A'];
+    if (c >= '0' && c <= '9') return glyphs[26 + (c - '0')];
+    if (c == ':') return colon;
+    if (c == '-') return dash;
+    if (c == '.') return dot;
+    if (c == '!') return bang;
+    if (c == '?') return question;
+    return unknown;
+}
+
+static void brise_graph_draw_text(void* renderer, BriseSDLSetRenderDrawColorFn set_color, BriseSDLRenderFillRectFn fill_rect,
+                                  int x, int y, const char* text, unsigned char r, unsigned char g, unsigned char b) {
+    const int scale = 2;
+    set_color(renderer, r, g, b, 255);
+    for (size_t i = 0; text && text[i]; ++i) {
+        const unsigned char* glyph = brise_graph_glyph(text[i]);
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if (glyph[row] & (1u << (4 - col))) {
+                    BriseGraphRect px = {x + (int)i * 12 + col * scale, y + row * scale, scale, scale};
+                    fill_rect(renderer, &px);
+                }
+            }
+        }
+    }
+}
+
 struct BriseRuntime {
     VarEntry* vars;
     size_t vars_count;
@@ -875,43 +933,100 @@ static int execute_cmd_call(BriseRuntime* rt, BriseTokenArray* tokens, BriseErro
 
 static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
     if (!rt->graph_enabled) { set_error(rt,ctx,"Graph library is not loaded. Use Call \"Graph\""); return 0; }
-    if (tokens->count < 6 || tokens->items[2].type != TOK_IDENTIFIER || tokens->items[3].type != TOK_LPAREN) {
+    if (tokens->count < 5 || tokens->items[2].type != TOK_IDENTIFIER || tokens->items[3].type != TOK_LPAREN) {
         set_error(rt,ctx,"Graph syntax: Graph:window(...), Graph:label(...), Graph:button(...), Graph:render(...)");
         return 0;
     }
+    const char* method = tokens->items[2].text;
     int ok = 0;
     size_t rp = find_matching_rparen(rt, tokens, 3, ctx, &ok);
     if (!ok) return 0;
-    BriseTokenArray expr = token_slice(tokens, 4, rp);
-    size_t p = 0;
-    BriseValue v;
-    if (!parse_expression(rt, &expr, &p, ctx, &v)) { token_array_free(&expr); return 0; }
-    token_array_free(&expr);
-    char* txt = value_to_string_heap(&v);
-    free_value(&v);
 
-    if (brise_streq_ci(tokens->items[2].text, "window")) {
+    char* txt = NULL;
+    char* callback = xstrdup("");
+    BriseTokenArray expr = {NULL, 0, 0};
+
+    if (brise_streq_ci(method, "render") || brise_streq_ci(method, "update") || brise_streq_ci(method, "refresh")) {
+        if (rp == 4) {
+            txt = xstrdup("0");
+        } else {
+            expr = token_slice(tokens, 4, rp);
+            size_t p = 0;
+            BriseValue v;
+            if (!parse_expression(rt, &expr, &p, ctx, &v)) { token_array_free(&expr); free(callback); return 0; }
+            token_array_free(&expr);
+            txt = value_to_string_heap(&v);
+            free_value(&v);
+        }
+    } else if (brise_streq_ci(method, "button")) {
+        size_t comma = rp;
+        int depth = 0;
+        for (size_t i = 4; i < rp; ++i) {
+            if (tokens->items[i].type == TOK_LPAREN) depth++;
+            if (tokens->items[i].type == TOK_RPAREN) depth--;
+            if (depth == 0 && tokens->items[i].type == TOK_COMMA) { comma = i; break; }
+        }
+        BriseTokenArray label_expr = token_slice(tokens, 4, comma == rp ? rp : comma);
+        size_t p = 0;
+        BriseValue v;
+        if (!parse_expression(rt, &label_expr, &p, ctx, &v)) { token_array_free(&label_expr); free(callback); return 0; }
+        token_array_free(&label_expr);
+        txt = value_to_string_heap(&v);
+        free_value(&v);
+
+        if (comma != rp) {
+            free(callback);
+            BriseTokenArray cb_expr = token_slice(tokens, comma + 1, rp);
+            if (cb_expr.count == 1 && (cb_expr.items[0].type == TOK_IDENTIFIER || cb_expr.items[0].type == TOK_KEYWORD)) {
+                callback = xstrdup(cb_expr.items[0].text);
+            } else {
+                p = 0;
+                BriseValue cv;
+                if (!parse_expression(rt, &cb_expr, &p, ctx, &cv)) { token_array_free(&cb_expr); free(txt); return 0; }
+                callback = value_to_string_heap(&cv);
+                free_value(&cv);
+            }
+            token_array_free(&cb_expr);
+        }
+    } else {
+        expr = token_slice(tokens, 4, rp);
+        size_t p = 0;
+        BriseValue v;
+        if (!parse_expression(rt, &expr, &p, ctx, &v)) { token_array_free(&expr); free(callback); return 0; }
+        token_array_free(&expr);
+        txt = value_to_string_heap(&v);
+        free_value(&v);
+    }
+
+    if (!txt || !callback) { free(txt); free(callback); set_error(rt,ctx,"Out of memory"); return 0; }
+
+    if (brise_streq_ci(method, "window")) {
         free(rt->graph_title);
         rt->graph_title = xstrdup(txt);
         free(txt);
+        free(callback);
         return 1;
     }
-    if (brise_streq_ci(tokens->items[2].text, "label") || brise_streq_ci(tokens->items[2].text, "button")) {
+    if (brise_streq_ci(method, "label") || brise_streq_ci(method, "button")) {
         char row[2048];
-        snprintf(row, sizeof(row), "%c:%s\n", brise_streq_ci(tokens->items[2].text, "label") ? 'L' : 'B', txt);
+        if (brise_streq_ci(method, "label")) snprintf(row, sizeof(row), "L:%s\n", txt);
+        else snprintf(row, sizeof(row), "B:%s|%s\n", txt, callback);
         free(txt);
+        free(callback);
         if (!append_text(&rt->graph_elements, row)) { set_error(rt,ctx,"Out of memory"); return 0; }
         return 1;
     }
-    if (!brise_streq_ci(tokens->items[2].text, "render")) {
+    if (!brise_streq_ci(method, "render") && !brise_streq_ci(method, "update") && !brise_streq_ci(method, "refresh")) {
         free(txt);
+        free(callback);
         set_error(rt,ctx,"Unknown Graph method");
         return 0;
     }
 
     int window_ms = atoi(txt);
-    if (window_ms <= 0) window_ms = 2500;
+    int run_forever = (window_ms <= 0) || brise_streq_ci(txt, "forever");
     free(txt);
+    free(callback);
 
     void* lib = brise_dlopen("SDL2.dll");
     if (!lib) lib = brise_dlopen("libSDL2-2.0.so.0");
@@ -961,7 +1076,10 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     if (!ren) { SDL_DestroyWindow_p(win); SDL_Quit_p(); brise_dlclose(lib); set_error(rt,ctx,"SDL2 renderer creation failed"); return 0; }
 
     typedef struct { int x,y,w,h; unsigned char r,g,b,a; } R;
+    typedef struct { int x,y,w,h; char* callback; } ButtonHit;
     R rect;
+    ButtonHit button_hits[64];
+    size_t button_hit_count = 0;
 
     SDL_SetRenderDrawColor_p(ren, 0, 128, 128, 255);
     SDL_RenderClear_p(ren);
@@ -973,6 +1091,7 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     rect.x=40; rect.y=40; rect.w=560; rect.h=30; rect.r=0; rect.g=0; rect.b=128; rect.a=255;
     SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
     SDL_RenderFillRect_p(ren, &rect);
+    brise_graph_draw_text(ren, SDL_SetRenderDrawColor_p, SDL_RenderFillRect_p, 52, 48, title, 255, 255, 255);
 
     int y = 90;
     if (rt->graph_elements) {
@@ -983,11 +1102,24 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
                 rect.x=70; rect.y=y; rect.w=300; rect.h=22; rect.r=230; rect.g=230; rect.b=230; rect.a=255;
                 SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
                 SDL_RenderFillRect_p(ren, &rect);
+                brise_graph_draw_text(ren, SDL_SetRenderDrawColor_p, SDL_RenderFillRect_p, rect.x + 8, rect.y + 4, line + 2, 0, 0, 0);
                 y += 30;
             } else if (line[0] == 'B' && line[1] == ':') {
-                rect.x=70; rect.y=y; rect.w=140; rect.h=30; rect.r=192; rect.g=192; rect.b=192; rect.a=255;
+                char* button_text = line + 2;
+                char* button_callback = strchr(button_text, '|');
+                if (button_callback) { *button_callback = '\0'; button_callback++; }
+                rect.x=70; rect.y=y; rect.w=180; rect.h=30; rect.r=192; rect.g=192; rect.b=192; rect.a=255;
                 SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
                 SDL_RenderFillRect_p(ren, &rect);
+                brise_graph_draw_text(ren, SDL_SetRenderDrawColor_p, SDL_RenderFillRect_p, rect.x + 10, rect.y + 8, button_text, 0, 0, 0);
+                if (button_callback && button_callback[0] && button_hit_count < sizeof(button_hits)/sizeof(button_hits[0])) {
+                    button_hits[button_hit_count].x = rect.x;
+                    button_hits[button_hit_count].y = rect.y;
+                    button_hits[button_hit_count].w = rect.w;
+                    button_hits[button_hit_count].h = rect.h;
+                    button_hits[button_hit_count].callback = xstrdup(button_callback);
+                    button_hit_count++;
+                }
                 y += 40;
             }
             line = strtok(NULL, "\n");
@@ -998,18 +1130,48 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     SDL_RenderPresent_p(ren);
 
     unsigned int elapsed = 0;
-    while (elapsed < (unsigned int)window_ms) {
+    int running = 1;
+    int render_ok = 1;
+    while (running && (run_forever || elapsed < (unsigned int)window_ms)) {
         unsigned char ev[56];
-        while (SDL_PollEvent_p(ev)) { (void)ev; }
+        while (SDL_PollEvent_p(ev)) {
+            unsigned int event_type = 0;
+            memcpy(&event_type, ev, sizeof(event_type));
+            if (event_type == 0x100u) running = 0;
+            if (event_type == 0x401u) {
+                int mx = 0;
+                int my = 0;
+                memcpy(&mx, ev + 20, sizeof(mx));
+                memcpy(&my, ev + 24, sizeof(my));
+                for (size_t i = 0; i < button_hit_count; ++i) {
+                    ButtonHit* hit = &button_hits[i];
+                    if (mx >= hit->x && mx < hit->x + hit->w && my >= hit->y && my < hit->y + hit->h) {
+                        CommandEntry* command = find_command(rt, hit->callback);
+                        if (!command) {
+                            set_error(rt,ctx,"Graph button callback command not found");
+                            render_ok = 0;
+                            running = 0;
+                            break;
+                        }
+                        if (!execute_tokens(rt, &command->body, ctx)) {
+                            render_ok = 0;
+                            running = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         SDL_Delay_p(16);
-        elapsed += 16;
+        if (!run_forever) elapsed += 16;
     }
 
+    for (size_t i = 0; i < button_hit_count; ++i) free(button_hits[i].callback);
     SDL_DestroyRenderer_p(ren);
     SDL_DestroyWindow_p(win);
     SDL_Quit_p();
     brise_dlclose(lib);
-    return 1;
+    return render_ok;
 }
 
 static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
