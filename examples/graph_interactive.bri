@@ -1,0 +1,9 @@
+// Interactive Graph demo. Requires SDL2.
+Call "Graph"
+
+Command: on_click (say:"Graph button clicked")
+
+Graph:window("Graph callbacks")
+Graph:label("Click the button")
+Graph:button("Click me", "on_click")
+Graph:render("forever")

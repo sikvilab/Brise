@@ -1,0 +1,2 @@
+SET:lib_value = 21
+say:"loaded imported module"
