@@ -5,12 +5,36 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <dlfcn.h>
 #include <errno.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+typedef SOCKET BriseSocket;
+typedef int BriseIoSize;
+#define BRISE_INVALID_SOCKET INVALID_SOCKET
+#define brise_close_socket closesocket
+#define brise_dlopen(name) ((void*)LoadLibraryA(name))
+#define brise_dlsym(handle, name) ((void*)GetProcAddress((HMODULE)(handle), name))
+#define brise_dlclose(handle) FreeLibrary((HMODULE)(handle))
+#else
+#include <dlfcn.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+typedef int BriseSocket;
+typedef ssize_t BriseIoSize;
+#define BRISE_INVALID_SOCKET (-1)
+#define brise_close_socket close
+#define brise_dlopen(name) dlopen((name), RTLD_NOW)
+#define brise_dlsym(handle, name) dlsym((handle), (name))
+#define brise_dlclose(handle) dlclose(handle)
+#endif
 
 #define MAX_ERROR_LEN 512
 
@@ -837,8 +861,9 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     if (window_ms <= 0) window_ms = 2500;
     free(txt);
 
-    void* lib = dlopen("libSDL2-2.0.so.0", RTLD_NOW);
-    if (!lib) lib = dlopen("libSDL2.so", RTLD_NOW);
+    void* lib = brise_dlopen("SDL2.dll");
+    if (!lib) lib = brise_dlopen("libSDL2-2.0.so.0");
+    if (!lib) lib = brise_dlopen("libSDL2.so");
     if (!lib) { set_error(rt,ctx,"SDL2 is not installed (Graph needs SDL2)"); return 0; }
 
     typedef int (*SDL_Init_Fn)(unsigned int);
@@ -854,34 +879,34 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     typedef void (*SDL_DestroyRenderer_Fn)(void*);
     typedef void (*SDL_DestroyWindow_Fn)(void*);
 
-    SDL_Init_Fn SDL_Init_p = (SDL_Init_Fn)dlsym(lib, "SDL_Init");
-    SDL_Quit_Fn SDL_Quit_p = (SDL_Quit_Fn)dlsym(lib, "SDL_Quit");
-    SDL_CreateWindow_Fn SDL_CreateWindow_p = (SDL_CreateWindow_Fn)dlsym(lib, "SDL_CreateWindow");
-    SDL_CreateRenderer_Fn SDL_CreateRenderer_p = (SDL_CreateRenderer_Fn)dlsym(lib, "SDL_CreateRenderer");
-    SDL_SetRenderDrawColor_Fn SDL_SetRenderDrawColor_p = (SDL_SetRenderDrawColor_Fn)dlsym(lib, "SDL_SetRenderDrawColor");
-    SDL_RenderClear_Fn SDL_RenderClear_p = (SDL_RenderClear_Fn)dlsym(lib, "SDL_RenderClear");
-    SDL_RenderFillRect_Fn SDL_RenderFillRect_p = (SDL_RenderFillRect_Fn)dlsym(lib, "SDL_RenderFillRect");
-    SDL_RenderPresent_Fn SDL_RenderPresent_p = (SDL_RenderPresent_Fn)dlsym(lib, "SDL_RenderPresent");
-    SDL_PollEvent_Fn SDL_PollEvent_p = (SDL_PollEvent_Fn)dlsym(lib, "SDL_PollEvent");
-    SDL_Delay_Fn SDL_Delay_p = (SDL_Delay_Fn)dlsym(lib, "SDL_Delay");
-    SDL_DestroyRenderer_Fn SDL_DestroyRenderer_p = (SDL_DestroyRenderer_Fn)dlsym(lib, "SDL_DestroyRenderer");
-    SDL_DestroyWindow_Fn SDL_DestroyWindow_p = (SDL_DestroyWindow_Fn)dlsym(lib, "SDL_DestroyWindow");
+    SDL_Init_Fn SDL_Init_p = (SDL_Init_Fn)brise_dlsym(lib, "SDL_Init");
+    SDL_Quit_Fn SDL_Quit_p = (SDL_Quit_Fn)brise_dlsym(lib, "SDL_Quit");
+    SDL_CreateWindow_Fn SDL_CreateWindow_p = (SDL_CreateWindow_Fn)brise_dlsym(lib, "SDL_CreateWindow");
+    SDL_CreateRenderer_Fn SDL_CreateRenderer_p = (SDL_CreateRenderer_Fn)brise_dlsym(lib, "SDL_CreateRenderer");
+    SDL_SetRenderDrawColor_Fn SDL_SetRenderDrawColor_p = (SDL_SetRenderDrawColor_Fn)brise_dlsym(lib, "SDL_SetRenderDrawColor");
+    SDL_RenderClear_Fn SDL_RenderClear_p = (SDL_RenderClear_Fn)brise_dlsym(lib, "SDL_RenderClear");
+    SDL_RenderFillRect_Fn SDL_RenderFillRect_p = (SDL_RenderFillRect_Fn)brise_dlsym(lib, "SDL_RenderFillRect");
+    SDL_RenderPresent_Fn SDL_RenderPresent_p = (SDL_RenderPresent_Fn)brise_dlsym(lib, "SDL_RenderPresent");
+    SDL_PollEvent_Fn SDL_PollEvent_p = (SDL_PollEvent_Fn)brise_dlsym(lib, "SDL_PollEvent");
+    SDL_Delay_Fn SDL_Delay_p = (SDL_Delay_Fn)brise_dlsym(lib, "SDL_Delay");
+    SDL_DestroyRenderer_Fn SDL_DestroyRenderer_p = (SDL_DestroyRenderer_Fn)brise_dlsym(lib, "SDL_DestroyRenderer");
+    SDL_DestroyWindow_Fn SDL_DestroyWindow_p = (SDL_DestroyWindow_Fn)brise_dlsym(lib, "SDL_DestroyWindow");
 
     if (!SDL_Init_p || !SDL_Quit_p || !SDL_CreateWindow_p || !SDL_CreateRenderer_p || !SDL_SetRenderDrawColor_p ||
         !SDL_RenderClear_p || !SDL_RenderFillRect_p || !SDL_RenderPresent_p || !SDL_PollEvent_p || !SDL_Delay_p ||
         !SDL_DestroyRenderer_p || !SDL_DestroyWindow_p) {
-        dlclose(lib);
+        brise_dlclose(lib);
         set_error(rt,ctx,"SDL2 symbols are missing");
         return 0;
     }
 
-    if (SDL_Init_p(0x00000020u) != 0) { dlclose(lib); set_error(rt,ctx,"SDL2 init failed"); return 0; }
+    if (SDL_Init_p(0x00000020u) != 0) { brise_dlclose(lib); set_error(rt,ctx,"SDL2 init failed"); return 0; }
 
     const char* title = rt->graph_title ? rt->graph_title : "Graph";
     void* win = SDL_CreateWindow_p(title, 100, 100, 640, 420, 0);
-    if (!win) { SDL_Quit_p(); dlclose(lib); set_error(rt,ctx,"SDL2 window creation failed"); return 0; }
+    if (!win) { SDL_Quit_p(); brise_dlclose(lib); set_error(rt,ctx,"SDL2 window creation failed"); return 0; }
     void* ren = SDL_CreateRenderer_p(win, -1, 0);
-    if (!ren) { SDL_DestroyWindow_p(win); SDL_Quit_p(); dlclose(lib); set_error(rt,ctx,"SDL2 renderer creation failed"); return 0; }
+    if (!ren) { SDL_DestroyWindow_p(win); SDL_Quit_p(); brise_dlclose(lib); set_error(rt,ctx,"SDL2 renderer creation failed"); return 0; }
 
     typedef struct { int x,y,w,h; unsigned char r,g,b,a; } R;
     R rect;
@@ -931,7 +956,7 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     SDL_DestroyRenderer_p(ren);
     SDL_DestroyWindow_p(win);
     SDL_Quit_p();
-    dlclose(lib);
+    brise_dlclose(lib);
     return 1;
 }
 
@@ -988,6 +1013,11 @@ static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
 
     if (host[0] == '\0' || port <= 0) { set_error(rt,ctx,"Netwe invalid URL"); return 0; }
 
+#ifdef _WIN32
+    WSADATA wsa_data;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) { set_error(rt,ctx,"Netwe WinSock startup failed"); return 0; }
+#endif
+
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -997,34 +1027,55 @@ static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     snprintf(port_text, sizeof(port_text), "%d", port);
 
     struct addrinfo* res = NULL;
-    if (getaddrinfo(host, port_text, &hints, &res) != 0) { set_error(rt,ctx,"Netwe DNS resolve failed"); return 0; }
+    if (getaddrinfo(host, port_text, &hints, &res) != 0) {
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        set_error(rt,ctx,"Netwe DNS resolve failed"); return 0;
+    }
 
-    int sock = -1;
+    BriseSocket sock = BRISE_INVALID_SOCKET;
     for (struct addrinfo* it = res; it; it = it->ai_next) {
-        sock = (int)socket(it->ai_family, it->ai_socktype, it->ai_protocol);
-        if (sock < 0) continue;
-        if (connect(sock, it->ai_addr, it->ai_addrlen) == 0) break;
-        close(sock);
-        sock = -1;
+        sock = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        if (sock == BRISE_INVALID_SOCKET) continue;
+        if (connect(sock, it->ai_addr, (int)it->ai_addrlen) == 0) break;
+        brise_close_socket(sock);
+        sock = BRISE_INVALID_SOCKET;
     }
     freeaddrinfo(res);
 
-    if (sock < 0) { set_error(rt,ctx,"Netwe socket connect failed"); return 0; }
+    if (sock == BRISE_INVALID_SOCKET) {
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        set_error(rt,ctx,"Netwe socket connect failed"); return 0;
+    }
 
     char req[2048];
     snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: BriseNet/0.1\r\n\r\n", path, host);
-    ssize_t sent = send(sock, req, strlen(req), 0);
-    if (sent < 0) { close(sock); set_error(rt,ctx,"Netwe send failed"); return 0; }
+    BriseIoSize sent = (BriseIoSize)send(sock, req, (int)strlen(req), 0);
+    if (sent < 0) { brise_close_socket(sock);
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        set_error(rt,ctx,"Netwe send failed"); return 0; }
 
     char* response = xstrdup("");
     char buf[1024];
     while (1) {
-        ssize_t n = recv(sock, buf, sizeof(buf)-1, 0);
+        BriseIoSize n = (BriseIoSize)recv(sock, buf, (int)sizeof(buf)-1, 0);
         if (n <= 0) break;
         buf[n] = '\0';
-        if (!append_text(&response, buf)) { close(sock); free(response); set_error(rt,ctx,"Out of memory"); return 0; }
+        if (!append_text(&response, buf)) { brise_close_socket(sock); free(response);
+#ifdef _WIN32
+            WSACleanup();
+#endif
+            set_error(rt,ctx,"Out of memory"); return 0; }
     }
-    close(sock);
+    brise_close_socket(sock);
+#ifdef _WIN32
+    WSACleanup();
+#endif
 
     char* body = strstr(response, "\r\n\r\n");
     char* payload = body ? body + 4 : response;
