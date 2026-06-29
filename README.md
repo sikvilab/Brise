@@ -119,10 +119,10 @@ If the landing page is not visible on GitHub, enable **GitHub Pages** in reposit
 - Unsupported commands such as `Graph:` and `Netwe:` now stop BTC with a clear file/line error instead of being silently skipped; HTTPS/TLS for `Netwe:`, automatic SDL2 bundling for `Graph:`, package management, and deeper generated-code memory management remain planned follow-ups.
 
 ### Windows build note
-When building Brise on Windows, compile the C++ launcher and C runtime together and link WinSock for `Netwe:`:
+When building Brise on Windows, compile the C++ launcher and C runtime together:
 
 ```powershell
-g++ -std=c++11 main.cpp brise_runtime.c -lws2_32 -o brise.exe
+g++ -std=c++11 main.cpp brise_runtime.c -o brise.exe
 ```
 
-`Graph:` loads `SDL2.dll` dynamically on Windows, so no `dlfcn.h` or `-ldl` dependency is required there.
+`Graph:` loads `SDL2.dll` dynamically and `Netwe:` loads `ws2_32.dll` dynamically on Windows, so no `dlfcn.h`, `-ldl`, or explicit `-lws2_32` linker flag is required there.
