@@ -1,10 +1,13 @@
 // BTC preview demo: compile with `./btc examples/btc_demo.bri`.
 
 SAY:"BTC native demo"
+import:"btc_math.bri"
 SET:a = 5
 calc:b = a * 2 + 3
 say:a
 say:b
+SET:list = [1, 2, 3]
+say:list
 if: b > 10 (
     say:"b is big"
 ) else:(

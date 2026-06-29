@@ -112,7 +112,8 @@ If the landing page is not visible on GitHub, enable **GitHub Pages** in reposit
 ## ⚙️ BTC preview (Brise To C)
 - Added `btc.c`, a standalone preview compiler/transpiler for simple Brise scripts.
 - Usage: `gcc btc.c -o btc`, then `./btc main.bri` to generate `main.c` and build a native binary with `gcc`.
-- Supported in this preview: `set:`, `calc:`, `say:`, multi-line `if: ... (...) else:(...)`, and multi-line `task:(...)` blocks.
-- `task:` blocks are emitted as `pthread` worker functions in generated C, so compiled scripts can start background work while the main program continues.
+- Supported in this preview: `set:`, `calc:`, `say:`, multi-line `if: ... (...) else:(...)`, multi-line `task:(...)`, `include:`/`import:`, and simple numeric array literals (`set:list = [1, 2, 3]`).
+- `include:`/`import:` resolve quoted paths relative to the current `.bri` file and compile the imported file through the same block emitter.
+- `task:` blocks are emitted as `pthread` worker functions in generated C, so compiled scripts can start background work while the main program continues; task scopes are isolated from the main scope to avoid accidental C redeclarations.
 - BTC and the C runtime now treat built-in command keywords case-insensitively, so `say:`, `Say:`, and `SAY:` are accepted as the same command.
-- Unsupported commands such as `Graph:` and `Netwe:` now stop BTC with a clear error instead of being silently skipped; HTTPS/TLS for `Netwe:`, automatic SDL2 bundling for `Graph:`, and deeper generated-code memory management remain planned follow-ups.
+- Unsupported commands such as `Graph:` and `Netwe:` now stop BTC with a clear file/line error instead of being silently skipped; HTTPS/TLS for `Netwe:`, automatic SDL2 bundling for `Graph:`, package management, and deeper generated-code memory management remain planned follow-ups.
