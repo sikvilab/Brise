@@ -107,7 +107,7 @@ If the landing page is not visible on GitHub, enable **GitHub Pages** in reposit
 
 
 - Netwe currently supports HTTP over raw sockets (`http://`); HTTPS/TLS is planned.
-- Graph uses SDL2 at runtime (requires SDL2 installed in the system).
+- Graph uses SDL2 at runtime (requires SDL2 installed in the system). `Graph:label(...)` and `Graph:button(...)` now render built-in bitmap text without SDL_ttf, and `Graph:render(0)` / `Graph:render("forever")` keeps the window open until the user closes it.
 
 ## ⚙️ BTC preview (Brise To C)
 - Added `btc.c`, a standalone preview compiler/transpiler for simple Brise scripts.

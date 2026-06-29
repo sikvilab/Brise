@@ -119,6 +119,64 @@ typedef struct {
     size_t capacity;
 } FileCacheEntry;
 
+typedef int (*BriseSDLSetRenderDrawColorFn)(void*, unsigned char, unsigned char, unsigned char, unsigned char);
+typedef int (*BriseSDLRenderFillRectFn)(void*, const void*);
+
+typedef struct {
+    int x;
+    int y;
+    int w;
+    int h;
+} BriseGraphRect;
+
+static const unsigned char* brise_graph_glyph(char c) {
+    static const unsigned char unknown[7] = {14,17,1,2,4,0,4};
+    static const unsigned char space[7] = {0,0,0,0,0,0,0};
+    static const unsigned char glyphs[36][7] = {
+        {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30}, {14,17,16,16,16,17,14}, {30,17,17,17,17,17,30},
+        {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16}, {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17},
+        {14,4,4,4,4,4,14}, {7,2,2,2,2,18,12}, {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+        {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17}, {14,17,17,17,17,17,14}, {30,17,17,30,16,16,16},
+        {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17}, {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4},
+        {17,17,17,17,17,17,14}, {17,17,17,17,17,10,4}, {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+        {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31}, {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14},
+        {14,17,1,2,4,8,31}, {30,1,1,14,1,1,30}, {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+        {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8}, {14,17,17,14,17,17,14}, {14,17,17,15,1,1,14}
+    };
+    static const unsigned char colon[7] = {0,4,4,0,4,4,0};
+    static const unsigned char dash[7] = {0,0,0,31,0,0,0};
+    static const unsigned char dot[7] = {0,0,0,0,0,4,4};
+    static const unsigned char bang[7] = {4,4,4,4,4,0,4};
+    static const unsigned char question[7] = {14,17,1,2,4,0,4};
+    if (c == ' ') return space;
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c >= 'A' && c <= 'Z') return glyphs[c - 'A'];
+    if (c >= '0' && c <= '9') return glyphs[26 + (c - '0')];
+    if (c == ':') return colon;
+    if (c == '-') return dash;
+    if (c == '.') return dot;
+    if (c == '!') return bang;
+    if (c == '?') return question;
+    return unknown;
+}
+
+static void brise_graph_draw_text(void* renderer, BriseSDLSetRenderDrawColorFn set_color, BriseSDLRenderFillRectFn fill_rect,
+                                  int x, int y, const char* text, unsigned char r, unsigned char g, unsigned char b) {
+    const int scale = 2;
+    set_color(renderer, r, g, b, 255);
+    for (size_t i = 0; text && text[i]; ++i) {
+        const unsigned char* glyph = brise_graph_glyph(text[i]);
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if (glyph[row] & (1u << (4 - col))) {
+                    BriseGraphRect px = {x + (int)i * 12 + col * scale, y + row * scale, scale, scale};
+                    fill_rect(renderer, &px);
+                }
+            }
+        }
+    }
+}
+
 struct BriseRuntime {
     VarEntry* vars;
     size_t vars_count;
@@ -910,7 +968,7 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     }
 
     int window_ms = atoi(txt);
-    if (window_ms <= 0) window_ms = 2500;
+    int run_forever = (window_ms <= 0) || brise_streq_ci(txt, "forever");
     free(txt);
 
     void* lib = brise_dlopen("SDL2.dll");
@@ -973,6 +1031,7 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     rect.x=40; rect.y=40; rect.w=560; rect.h=30; rect.r=0; rect.g=0; rect.b=128; rect.a=255;
     SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
     SDL_RenderFillRect_p(ren, &rect);
+    brise_graph_draw_text(ren, SDL_SetRenderDrawColor_p, SDL_RenderFillRect_p, 52, 48, title, 255, 255, 255);
 
     int y = 90;
     if (rt->graph_elements) {
@@ -983,11 +1042,13 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
                 rect.x=70; rect.y=y; rect.w=300; rect.h=22; rect.r=230; rect.g=230; rect.b=230; rect.a=255;
                 SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
                 SDL_RenderFillRect_p(ren, &rect);
+                brise_graph_draw_text(ren, SDL_SetRenderDrawColor_p, SDL_RenderFillRect_p, rect.x + 8, rect.y + 4, line + 2, 0, 0, 0);
                 y += 30;
             } else if (line[0] == 'B' && line[1] == ':') {
-                rect.x=70; rect.y=y; rect.w=140; rect.h=30; rect.r=192; rect.g=192; rect.b=192; rect.a=255;
+                rect.x=70; rect.y=y; rect.w=180; rect.h=30; rect.r=192; rect.g=192; rect.b=192; rect.a=255;
                 SDL_SetRenderDrawColor_p(ren, rect.r, rect.g, rect.b, rect.a);
                 SDL_RenderFillRect_p(ren, &rect);
+                brise_graph_draw_text(ren, SDL_SetRenderDrawColor_p, SDL_RenderFillRect_p, rect.x + 10, rect.y + 8, line + 2, 0, 0, 0);
                 y += 40;
             }
             line = strtok(NULL, "\n");
@@ -998,11 +1059,16 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     SDL_RenderPresent_p(ren);
 
     unsigned int elapsed = 0;
-    while (elapsed < (unsigned int)window_ms) {
+    int running = 1;
+    while (running && (run_forever || elapsed < (unsigned int)window_ms)) {
         unsigned char ev[56];
-        while (SDL_PollEvent_p(ev)) { (void)ev; }
+        while (SDL_PollEvent_p(ev)) {
+            unsigned int event_type = 0;
+            memcpy(&event_type, ev, sizeof(event_type));
+            if (event_type == 0x100u) running = 0;
+        }
         SDL_Delay_p(16);
-        elapsed += 16;
+        if (!run_forever) elapsed += 16;
     }
 
     SDL_DestroyRenderer_p(ren);
