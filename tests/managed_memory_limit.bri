@@ -1,0 +1,3 @@
+// Deliberately invalid: the runtime-wide managed-cell budget is 1,048,576.
+Memory:alloc(all_cells, 1048576)
+Memory:alloc(one_too_many, 1)
