@@ -25,6 +25,8 @@ jobs:
         run: |
           ./brise tests/file_io_smoke.bri
           rm -f tests/brise_io.tmp
+      - name: Run matrix and managed-memory tests
+        run: ./brise tests/matrix_memory_smoke.bri
       - name: Reject file path traversal
         run: |
           if ./brise tests/path_traversal.bri; then
@@ -53,7 +55,7 @@ jobs:
       - name: Package Linux binaries
         run: |
           mkdir -p dist
-          cp brise btc README.md LICENSE examples/math_showcase.bri dist/
+          cp brise btc README.md LICENSE examples/math_showcase.bri examples/matrix_memory_demo.bri dist/
           printf '%s\n' "$GITHUB_SHA" > dist/BUILD_COMMIT
           tar -czf brise-linux-x86_64.tar.gz -C dist .
           sha256sum brise-linux-x86_64.tar.gz > brise-linux-x86_64.tar.gz.sha256
@@ -85,6 +87,8 @@ jobs:
         run: |
           .\brise.exe tests/file_io_smoke.bri
           Remove-Item -ErrorAction SilentlyContinue tests\brise_io.tmp
+      - name: Run matrix and managed-memory tests
+        run: .\brise.exe tests/matrix_memory_smoke.bri
       - name: Reject file path traversal
         shell: pwsh
         run: |
@@ -101,7 +105,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item brise.exe,btc.exe,README.md,LICENSE,examples/math_showcase.bri dist/
+          Copy-Item brise.exe,btc.exe,README.md,LICENSE,examples/math_showcase.bri,examples/matrix_memory_demo.bri dist/
           Set-Content -NoNewline -Path dist/BUILD_COMMIT -Value $env:GITHUB_SHA
           Compress-Archive -Path dist\* -DestinationPath brise-windows-x86_64.zip -Force
           $hash = (Get-FileHash brise-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()
