@@ -552,7 +552,7 @@ static int evaluate_builtin(BriseRuntime* rt, BriseErrorContext ctx, const char*
     char* t=NULL;
     if (brise_streq_ci(name,"mget") || brise_streq_ci(name,"matrix_get") ||
         brise_streq_ci(name,"mem_get")) {
-        if (!builtin_arity(rt,ctx,name,3) || args[0].type!=BRISE_VAL_STRING ||
+        if (!builtin_arity(rt,ctx,name,argc,3) || args[0].type!=BRISE_VAL_STRING ||
             !value_to_number(&args[1],&a) || !value_to_number(&args[2],&b) ||
             !isfinite(a) || !isfinite(b) || floor(a)!=a || floor(b)!=b || a<0 || b<0) {
             set_error(rt,ctx,"mget/mem_get expects a string name and non-negative integer indexes");
@@ -574,7 +574,7 @@ static int evaluate_builtin(BriseRuntime* rt, BriseErrorContext ctx, const char*
     if (brise_streq_ci(name,"mrows") || brise_streq_ci(name,"mcols") ||
         brise_streq_ci(name,"mdet") || brise_streq_ci(name,"mexists") ||
         brise_streq_ci(name,"matrix_exists")) {
-        if (!builtin_arity(rt,ctx,name,1) || args[0].type!=BRISE_VAL_STRING) {
+        if (!builtin_arity(rt,ctx,name,argc,1) || args[0].type!=BRISE_VAL_STRING) {
             set_error(rt,ctx,"Matrix query expects one string matrix name"); return 0;
         }
         MatrixEntry* matrix=find_matrix(rt,args[0].string_value);
@@ -588,7 +588,7 @@ static int evaluate_builtin(BriseRuntime* rt, BriseErrorContext ctx, const char*
         *out=value_number(result); return 1;
     }
     if (brise_streq_ci(name,"mem_size") || brise_streq_ci(name,"mem_exists")) {
-        if (!builtin_arity(rt,ctx,name,1) || args[0].type!=BRISE_VAL_STRING) {
+        if (!builtin_arity(rt,ctx,name,argc,1) || args[0].type!=BRISE_VAL_STRING) {
             set_error(rt,ctx,"Memory query expects one string block name"); return 0;
         }
         MemoryEntry* block=find_memory(rt,args[0].string_value);
