@@ -23,8 +23,8 @@ jobs:
       - name: Install MinGW
         run: |
           choco install mingw -y
-          echo "C:\\ProgramData\\chocolatey\\lib\\mingw\\tools\\install\\mingw64\\bin" >> $env:GITHUB_PATH
+          echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $env:GITHUB_PATH
       - name: Build interpreter
         run: g++ -std=c++17 main.cpp brise_runtime.c -I. -o brise.exe -static -static-libgcc -static-libstdc++
       - name: Run smoke tests
-        run: .\\brise.exe tests/smoke.bri
+        run: .\brise.exe tests/smoke.bri
