@@ -1362,7 +1362,7 @@ static double* matrix_inverse_values(BriseRuntime* rt, BriseErrorContext ctx, co
 }
 
 static int execute_cmd_matrix(BriseRuntime* rt, BriseTokenArray* t, BriseErrorContext ctx) {
-    if (t->count<5 || t->items[2].type!=TOK_IDENTIFIER || t->items[3].type!=TOK_LPAREN) {
+    if (t->count<5 || (t->items[2].type!=TOK_IDENTIFIER && t->items[2].type!=TOK_KEYWORD) || t->items[3].type!=TOK_LPAREN) {
         set_error(rt,ctx,"Use Matrix:create, Matrix:set, Matrix:identity, or an advanced Matrix operation");
         return 0;
     }
@@ -1529,7 +1529,7 @@ static int execute_cmd_matrix(BriseRuntime* rt, BriseTokenArray* t, BriseErrorCo
 }
 
 static int execute_cmd_memory(BriseRuntime* rt, BriseTokenArray* t, BriseErrorContext ctx) {
-    if (t->count<5 || t->items[2].type!=TOK_IDENTIFIER || t->items[3].type!=TOK_LPAREN) {
+    if (t->count<5 || (t->items[2].type!=TOK_IDENTIFIER && t->items[2].type!=TOK_KEYWORD) || t->items[3].type!=TOK_LPAREN) {
         set_error(rt,ctx,"Use Memory:alloc(name, cells), Memory:set(name, index, value), or Memory:fill");
         return 0;
     }
