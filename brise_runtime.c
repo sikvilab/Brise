@@ -775,6 +775,29 @@ static int condition_is_wrapped(const BriseTokenArray* cond) {
     return 0;
 }
 
+static size_t find_condition_keyword(const BriseTokenArray* cond, const char* keyword) {
+    int depth=0;
+    for(size_t i=0;i+1<cond->count;i++) {
+        if(cond->items[i].type==TOK_LPAREN) depth++;
+        else if(cond->items[i].type==TOK_RPAREN && depth>0) depth--;
+        else if(depth==0 && cond->items[i].type==TOK_KEYWORD && brise_streq_ci(cond->items[i].text,keyword)) return i;
+    }
+    return (size_t)-1;
+}
+
+static int condition_is_wrapped(const BriseTokenArray* cond) {
+    if(cond->count<4 || cond->items[0].type!=TOK_LPAREN) return 0;
+    int depth=0;
+    for(size_t i=0;i+1<cond->count;i++) {
+        if(cond->items[i].type==TOK_LPAREN) depth++;
+        else if(cond->items[i].type==TOK_RPAREN) {
+            depth--;
+            if(depth==0) return i==cond->count-2;
+        }
+    }
+    return 0;
+}
+
 static int eval_condition(BriseRuntime* rt, BriseTokenArray* cond, BriseErrorContext ctx, int* result) {
     if(condition_is_wrapped(cond)) {
         BriseTokenArray inner=token_slice(cond,1,cond->count-2);
@@ -846,52 +869,6 @@ static int eval_condition(BriseRuntime* rt, BriseTokenArray* cond, BriseErrorCon
         free(ls); free(rs);
     }
     free_value(&lv); free_value(&rv); return 1;
-}
-
-
-    size_t cmp = (size_t)-1;
-    for (size_t i=0;i<cond->count;i++) {
-        if (cond->items[i].type==TOK_OPERATOR) {
-            const char* op = cond->items[i].text;
-            if (!strcmp(op,"==")||!strcmp(op,"!=")||!strcmp(op,">")||!strcmp(op,"<")||!strcmp(op,">=")||!strcmp(op,"<=")) { cmp=i; break; }
-        }
-    }
-    if (cmp==(size_t)-1) {
-        size_t p=0; BriseValue v;
-        if (!parse_expression(rt,cond,&p,ctx,&v)) return 0;
-        *result = value_to_bool(&v);
-        free_value(&v); return 1;
-    }
-
-    BriseTokenArray left = token_slice(cond,0,cmp);
-    BriseTokenArray right = token_slice(cond,cmp+1,cond->count-1);
-    size_t lp=0,rp=0; BriseValue lv,rv;
-    int ok = parse_expression(rt,&left,&lp,ctx,&lv) && parse_expression(rt,&right,&rp,ctx,&rv);
-    token_array_free(&left); token_array_free(&right);
-    if (!ok) return 0;
-
-    const char* op = cond->items[cmp].text;
-    double ln,rn;
-    if (value_to_number(&lv,&ln) && value_to_number(&rv,&rn)) {
-        if (!strcmp(op,"==")) *result = (ln==rn);
-        else if (!strcmp(op,"!=")) *result = (ln!=rn);
-        else if (!strcmp(op,">")) *result = (ln>rn);
-        else if (!strcmp(op,"<")) *result = (ln<rn);
-        else if (!strcmp(op,">=")) *result = (ln>=rn);
-        else *result = (ln<=rn);
-    } else {
-        char* ls=value_to_string_heap(&lv); char* rs=value_to_string_heap(&rv);
-        int c = strcmp(ls,rs);
-        if (!strcmp(op,"==")) *result = (c==0);
-        else if (!strcmp(op,"!=")) *result = (c!=0);
-        else if (!strcmp(op,">")) *result = (c>0);
-        else if (!strcmp(op,"<")) *result = (c<0);
-        else if (!strcmp(op,">=")) *result = (c>=0);
-        else *result = (c<=0);
-        free(ls); free(rs);
-    }
-    free_value(&lv); free_value(&rv);
-    return 1;
 }
 
 static int append_text(char** dst, const char* text) {
