@@ -550,19 +550,23 @@ static int evaluate_builtin(BriseRuntime* rt, BriseErrorContext ctx, const char*
     double a=0.0,b=0.0,c=0.0,result=0.0;
     char* s=NULL;
     char* t=NULL;
-    if (brise_streq_ci(name,"mget") || brise_streq_ci(name,"matrix_get") ||
-        brise_streq_ci(name,"mem_get")) {
+    if (brise_streq_ci(name,"mem_get")) {
+        if (!builtin_arity(rt,ctx,name,argc,2) || args[0].type!=BRISE_VAL_STRING ||
+            !value_to_number(&args[1],&a) || !isfinite(a) || floor(a)!=a || a<0) {
+            set_error(rt,ctx,"mem_get expects a string memory-block name and a non-negative integer index");
+            return 0;
+        }
+        MemoryEntry* block=find_memory(rt,args[0].string_value);
+        if (!block) { set_error(rt,ctx,"Memory block does not exist or was freed"); return 0; }
+        if (a>=(double)block->count) { set_error(rt,ctx,"Memory cell index is out of range"); return 0; }
+        *out=value_number(block->cells[(size_t)a]); return 1;
+    }
+    if (brise_streq_ci(name,"mget") || brise_streq_ci(name,"matrix_get")) {
         if (!builtin_arity(rt,ctx,name,argc,3) || args[0].type!=BRISE_VAL_STRING ||
             !value_to_number(&args[1],&a) || !value_to_number(&args[2],&b) ||
             !isfinite(a) || !isfinite(b) || floor(a)!=a || floor(b)!=b || a<0 || b<0) {
-            set_error(rt,ctx,"mget/mem_get expects a string name and non-negative integer indexes");
+            set_error(rt,ctx,"mget expects a string matrix name and non-negative integer row and column");
             return 0;
-        }
-        if (brise_streq_ci(name,"mem_get")) {
-            MemoryEntry* block=find_memory(rt,args[0].string_value);
-            if (!block) { set_error(rt,ctx,"Memory block does not exist or was freed"); return 0; }
-            if (a>=(double)block->count) { set_error(rt,ctx,"Memory cell index is out of range"); return 0; }
-            *out=value_number(block->cells[(size_t)a]); return 1;
         }
         MatrixEntry* matrix=find_matrix(rt,args[0].string_value);
         if (!matrix) { set_error(rt,ctx,"Matrix does not exist"); return 0; }
