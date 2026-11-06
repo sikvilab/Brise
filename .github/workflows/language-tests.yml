@@ -70,9 +70,11 @@ jobs:
           .\brise.exe tests/file_io_smoke.bri
           Remove-Item -ErrorAction SilentlyContinue tests\brise_io.tmp
       - name: Reject file path traversal
+        shell: pwsh
         run: |
-          .\brise.exe tests/path_traversal.bri
-          if ($LASTEXITCODE -eq 0) { throw "Path traversal unexpectedly succeeded" }
+          $exe = (Resolve-Path .\brise.exe).Path
+          $result = Start-Process -FilePath $exe -ArgumentList @("tests/path_traversal.bri") -Wait -PassThru -NoNewWindow
+          if ($result.ExitCode -eq 0) { throw "Path traversal unexpectedly succeeded" }
       - name: Run BTC transpiler smoke test
         run: |
           .\btc.exe tests/btc_smoke.bri --no-build
