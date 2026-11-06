@@ -775,29 +775,6 @@ static int condition_is_wrapped(const BriseTokenArray* cond) {
     return 0;
 }
 
-static size_t find_condition_keyword(const BriseTokenArray* cond, const char* keyword) {
-    int depth=0;
-    for(size_t i=0;i+1<cond->count;i++) {
-        if(cond->items[i].type==TOK_LPAREN) depth++;
-        else if(cond->items[i].type==TOK_RPAREN && depth>0) depth--;
-        else if(depth==0 && cond->items[i].type==TOK_KEYWORD && brise_streq_ci(cond->items[i].text,keyword)) return i;
-    }
-    return (size_t)-1;
-}
-
-static int condition_is_wrapped(const BriseTokenArray* cond) {
-    if(cond->count<4 || cond->items[0].type!=TOK_LPAREN) return 0;
-    int depth=0;
-    for(size_t i=0;i+1<cond->count;i++) {
-        if(cond->items[i].type==TOK_LPAREN) depth++;
-        else if(cond->items[i].type==TOK_RPAREN) {
-            depth--;
-            if(depth==0) return i==cond->count-2;
-        }
-    }
-    return 0;
-}
-
 static int eval_condition(BriseRuntime* rt, BriseTokenArray* cond, BriseErrorContext ctx, int* result) {
     if(condition_is_wrapped(cond)) {
         BriseTokenArray inner=token_slice(cond,1,cond->count-2);
