@@ -17,6 +17,8 @@
 - Number utilities: sign, factorial, gcd, lcm, hypot, is_prime, is_finite, is_nan, deg_to_rad, rad_to_deg
 - Constants: pi, tau, e, sqrt2, ln2, ln10
 - Lists, custom command blocks, file inclusion, console input and random values
+- Basic and advanced matrices: create, set, identity, add, subtract, multiply, transpose, scale, determinant, inverse
+- Manually managed numeric memory blocks with indexed cells and explicit `free:` deallocation (shared 1,048,576-cell runtime limit)
 - File I/O restricted to regular files in the script's own directory (no path separators or symlinks; 4 MiB limit)
 - Netwe supports HTTP and HTTPS; HTTPS validates the server certificate and hostname
 - Optional SDL2 Graph module
@@ -75,7 +77,7 @@ assert: gcd(54, 24) == 6
 assert: is_prime(97)
 ~~~
 
-See examples/math_showcase.bri for a longer tour.
+See examples/math_showcase.bri for a longer math tour and examples/matrix_memory_demo.bri for matrix and memory operations.
 
 ### Conditions
 
@@ -95,6 +97,51 @@ say:"Counter: (counter)"
 ~~~
 
 The interpreter currently reads one statement per source line, so control-flow action blocks must remain on the same line. Each while: execution is limited to 10,000 iterations.
+
+### Matrices
+
+Matrix cells store finite double-precision numbers. Matrices are zero-initialized, use zero-based row and column indexes, and share a 1,048,576-cell (8 MiB) allocation limit with manual memory blocks.
+
+~~~brise
+// Basic matrix operations
+Matrix:create(A, 2, 2)
+Matrix:set(A, 0, 0, 1)
+Matrix:set(A, 0, 1, 2)
+Matrix:set(A, 1, 0, 3)
+Matrix:set(A, 1, 1, 4)
+Matrix:identity(I, 2)
+Matrix:add(S, A, I)
+Matrix:print(S)
+
+// Advanced linear algebra
+Matrix:multiply(P, A, I)
+Matrix:transpose(T, A)
+Matrix:det(A, determinant)
+calc:det_again = mdet("A")
+Matrix:inverse(A_inverse, A)
+calc:first_cell = mget("A", 0, 0)
+assert: mrows("A") == 2
+assert: mcols("A") == 2
+~~~
+
+Available advanced operations include `add`, `sub`/`subtract`, `mul`/`multiply`, `copy`, `transpose`, `scale`, `det`/`determinant`, and `inverse`/`inv`. Matrix query functions are `mget(name,row,col)`, `mrows(name)`, `mcols(name)`, `mdet(name)`, and `mexists(name)`. Names passed to query functions must be strings. Matrix command names may be unquoted identifiers.
+
+### Managed memory
+
+`Memory:alloc` reserves a named block of numeric cells, `Memory:set` writes a cell, and `mem_get` reads it. `free:` releases a matrix and/or memory block by name. Indexes start at zero; use-after-free and out-of-range access produce runtime errors.
+
+~~~brise
+Memory:alloc(weights, 4)
+Memory:set(weights, 0, 0.25)
+Memory:set(weights, 1, -0.5)
+calc:first_weight = mem_get("weights", 0)
+say:"First weight: (first_weight)"
+say:"Cell count: (mem_size("weights"))"
+free:weights
+assert: not mem_exists("weights")
+~~~
+
+The matrix and manual-memory API is available in the interpreter. BTC remains a preview compiler for its documented subset and does not yet transpile these commands.
 
 ### Networking
 
