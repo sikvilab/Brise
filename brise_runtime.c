@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <math.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -357,7 +358,7 @@ static int token_push(BriseTokenArray* arr, BriseTokenType type, const char* tex
 }
 
 static int is_keyword(const char* w) {
-    const char* k[] = {"say","set","calc","if","else","Include","Call","List","Command","Graph","Netwe","random","solve","query","read","write","Say","to","everyone","true","false"};
+    const char* k[] = {"say","set","calc","if","else","while","assert","and","or","not","Include","Call","List","Command","Graph","Netwe","random","solve","query","read","write","Say","to","everyone","true","false"};
     size_t n = sizeof(k)/sizeof(k[0]);
     for (size_t i=0;i<n;++i) if (brise_streq_ci(k[i], w)) return 1;
     return 0;
@@ -456,6 +457,164 @@ static char* interpolate(BriseRuntime* rt, const char* src) {
 
 static int parse_expression(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out);
 
+static int builtin_arity(BriseRuntime* rt, BriseErrorContext ctx, const char* name, size_t got, size_t expected) {
+    if (got == expected) return 1;
+    char message[160];
+    snprintf(message, sizeof(message), "%s expects %zu argument(s)", name, expected);
+    set_error(rt, ctx, message);
+    return 0;
+}
+
+static char* ascii_transform(const char* input, int upper) {
+    size_t n = strlen(input);
+    char* result = (char*)malloc(n + 1);
+    if (!result) return NULL;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)input[i];
+        result[i] = (char)(upper ? toupper(c) : tolower(c));
+    }
+    result[n] = '\0';
+    return result;
+}
+
+static char* trim_string_copy(const char* input) {
+    const char* begin = input;
+    while (*begin && isspace((unsigned char)*begin)) begin++;
+    const char* end = input + strlen(input);
+    while (end > begin && isspace((unsigned char)end[-1])) end--;
+    return xstrndup(begin, (size_t)(end - begin));
+}
+
+static int values_equal(const BriseValue* a, const BriseValue* b) {
+    double an = 0.0, bn = 0.0;
+    if (value_to_number(a, &an) && value_to_number(b, &bn)) return an == bn;
+    char* as = value_to_string_heap(a);
+    char* bs = value_to_string_heap(b);
+    if (!as || !bs) { free(as); free(bs); return 0; }
+    int equal = strcmp(as, bs) == 0;
+    free(as); free(bs);
+    return equal;
+}
+
+static int evaluate_builtin(BriseRuntime* rt, BriseErrorContext ctx, const char* name,
+                            BriseValue* args, size_t argc, BriseValue* out) {
+    double a = 0.0, b = 0.0;
+    char* s = NULL;
+    char* t = NULL;
+
+    if (brise_streq_ci(name,"len") || brise_streq_ci(name,"str") ||
+        brise_streq_ci(name,"type") || brise_streq_ci(name,"upper") ||
+        brise_streq_ci(name,"lower") || brise_streq_ci(name,"trim") ||
+        brise_streq_ci(name,"to_number")) {
+        if (!builtin_arity(rt,ctx,name,argc,1)) return 0;
+        if (brise_streq_ci(name,"type")) {
+            *out = value_string(args[0].type == BRISE_VAL_STRING ? "string" :
+                args[0].type == BRISE_VAL_NUMBER ? "number" : "boolean");
+            return out->string_value != NULL;
+        }
+        if (brise_streq_ci(name,"to_number")) {
+            if (!value_to_number(&args[0],&a)) { set_error(rt,ctx,"to_number cannot convert value"); return 0; }
+            *out = value_number(a); return 1;
+        }
+        s = value_to_string_heap(&args[0]);
+        if (!s) { set_error(rt,ctx,"Out of memory"); return 0; }
+        if (brise_streq_ci(name,"len")) { *out=value_number((double)strlen(s)); free(s); return 1; }
+        if (brise_streq_ci(name,"str")) { *out=value_string(s); free(s); return out->string_value != NULL; }
+        if (brise_streq_ci(name,"upper") || brise_streq_ci(name,"lower")) {
+            t=ascii_transform(s,brise_streq_ci(name,"upper")); free(s);
+        } else { t=trim_string_copy(s); free(s); }
+        if (!t) { set_error(rt,ctx,"Out of memory"); return 0; }
+        *out=value_string(t); free(t); return out->string_value != NULL;
+    }
+
+    if (brise_streq_ci(name,"contains") || brise_streq_ci(name,"starts_with") || brise_streq_ci(name,"ends_with")) {
+        if (!builtin_arity(rt,ctx,name,argc,2)) return 0;
+        s=value_to_string_heap(&args[0]); t=value_to_string_heap(&args[1]);
+        if (!s || !t) { free(s); free(t); set_error(rt,ctx,"Out of memory"); return 0; }
+        int found=0;
+        if (brise_streq_ci(name,"contains")) found=strstr(s,t)!=NULL;
+        else if (brise_streq_ci(name,"starts_with")) found=strncmp(s,t,strlen(t))==0;
+        else { size_t sl=strlen(s), tl=strlen(t); found=tl<=sl && strcmp(s+sl-tl,t)==0; }
+        free(s); free(t); *out=value_bool(found); return 1;
+    }
+
+    if (brise_streq_ci(name,"assert_eq")) {
+        if (!builtin_arity(rt,ctx,name,argc,2)) return 0;
+        *out=value_bool(values_equal(&args[0],&args[1])); return 1;
+    }
+
+    if (brise_streq_ci(name,"abs") || brise_streq_ci(name,"sqrt") ||
+        brise_streq_ci(name,"floor") || brise_streq_ci(name,"ceil") ||
+        brise_streq_ci(name,"round")) {
+        if (!builtin_arity(rt,ctx,name,argc,1) || !value_to_number(&args[0],&a)) {
+            set_error(rt,ctx,"Math function expects one numeric argument"); return 0;
+        }
+        if (brise_streq_ci(name,"abs")) *out=value_number(fabs(a));
+        else if (brise_streq_ci(name,"sqrt")) {
+            if (a<0.0) { set_error(rt,ctx,"sqrt expects a non-negative number"); return 0; }
+            *out=value_number(sqrt(a));
+        } else if (brise_streq_ci(name,"floor")) *out=value_number(floor(a));
+        else if (brise_streq_ci(name,"ceil")) *out=value_number(ceil(a));
+        else *out=value_number(round(a));
+        return 1;
+    }
+
+    if (brise_streq_ci(name,"min") || brise_streq_ci(name,"max") || brise_streq_ci(name,"pow")) {
+        if (!builtin_arity(rt,ctx,name,argc,2) ||
+            !value_to_number(&args[0],&a) || !value_to_number(&args[1],&b)) {
+            set_error(rt,ctx,"Math function expects two numeric arguments"); return 0;
+        }
+        if (brise_streq_ci(name,"min")) *out=value_number(a<b?a:b);
+        else if (brise_streq_ci(name,"max")) *out=value_number(a>b?a:b);
+        else {
+            double result=pow(a,b);
+            if (!isfinite(result)) { set_error(rt,ctx,"pow result is not finite"); return 0; }
+            *out=value_number(result);
+        }
+        return 1;
+    }
+    set_error(rt,ctx,"Unknown built-in function");
+    return 0;
+}
+
+static int parse_builtin_call(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
+    const char* name=t->items[*p].text;
+    size_t cursor=*p+2;
+    BriseValue args[8];
+    memset(args,0,sizeof(args));
+    size_t argc=0;
+    if (t->items[cursor].type!=TOK_RPAREN) {
+        for (;;) {
+            if (argc>=sizeof(args)/sizeof(args[0])) {
+                set_error(rt,ctx,"Built-in function accepts at most 8 arguments");
+                for(size_t i=0;i<argc;i++) free_value(&args[i]);
+                return 0;
+            }
+            if (!parse_expression(rt,t,&cursor,ctx,&args[argc])) {
+                for(size_t i=0;i<argc;i++) free_value(&args[i]);
+                return 0;
+            }
+            argc++;
+            if (t->items[cursor].type==TOK_COMMA) { cursor++; continue; }
+            if (t->items[cursor].type!=TOK_RPAREN) {
+                set_error(rt,ctx,"Expected ',' or ')' in function call");
+                for(size_t i=0;i<argc;i++) free_value(&args[i]);
+                return 0;
+            }
+            break;
+        }
+    }
+    if (t->items[cursor].type!=TOK_RPAREN) {
+        set_error(rt,ctx,"Unclosed function call");
+        for(size_t i=0;i<argc;i++) free_value(&args[i]);
+        return 0;
+    }
+    *p=cursor+1;
+    int ok=evaluate_builtin(rt,ctx,name,args,argc,out);
+    for(size_t i=0;i<argc;i++) free_value(&args[i]);
+    return ok;
+}
+
 static int parse_primary(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
     BriseToken* tk = &t->items[*p];
     if (tk->type == TOK_NUMBER) {
@@ -470,7 +629,10 @@ static int parse_primary(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseE
     if (tk->type == TOK_KEYWORD && (brise_streq_ci(tk->text,"true") || brise_streq_ci(tk->text,"false"))) {
         *out = value_bool(brise_streq_ci(tk->text,"true")); (*p)++; return 1;
     }
+    if (tk->type == TOK_IDENTIFIER && t->items[*p + 1].type == TOK_LPAREN) return parse_builtin_call(rt,t,p,ctx,out);
     if (tk->type == TOK_IDENTIFIER || tk->type == TOK_KEYWORD) {
+        if (brise_streq_ci(tk->text,"pi")) { *out=value_number(3.14159265358979323846); (*p)++; return 1; }
+        if (brise_streq_ci(tk->text,"e")) { *out=value_number(2.71828182845904523536); (*p)++; return 1; }
         const VarEntry* v = find_var_const(rt, tk->text);
         if (!v) { set_error(rt, ctx, "Unknown variable"); return 0; }
         *out = clone_value(&v->value); (*p)++; return 1;
@@ -590,7 +752,103 @@ static size_t find_matching_rparen(BriseRuntime* rt, const BriseTokenArray* toke
     return 0;
 }
 
+static size_t find_condition_keyword(const BriseTokenArray* cond, const char* keyword) {
+    int depth=0;
+    for(size_t i=0;i+1<cond->count;i++) {
+        if(cond->items[i].type==TOK_LPAREN) depth++;
+        else if(cond->items[i].type==TOK_RPAREN && depth>0) depth--;
+        else if(depth==0 && cond->items[i].type==TOK_KEYWORD && brise_streq_ci(cond->items[i].text,keyword)) return i;
+    }
+    return (size_t)-1;
+}
+
+static int condition_is_wrapped(const BriseTokenArray* cond) {
+    if(cond->count<4 || cond->items[0].type!=TOK_LPAREN) return 0;
+    int depth=0;
+    for(size_t i=0;i+1<cond->count;i++) {
+        if(cond->items[i].type==TOK_LPAREN) depth++;
+        else if(cond->items[i].type==TOK_RPAREN) {
+            depth--;
+            if(depth==0) return i==cond->count-2;
+        }
+    }
+    return 0;
+}
+
 static int eval_condition(BriseRuntime* rt, BriseTokenArray* cond, BriseErrorContext ctx, int* result) {
+    if(condition_is_wrapped(cond)) {
+        BriseTokenArray inner=token_slice(cond,1,cond->count-2);
+        int ok=eval_condition(rt,&inner,ctx,result);
+        token_array_free(&inner); return ok;
+    }
+    size_t split=find_condition_keyword(cond,"or");
+    if(split!=(size_t)-1) {
+        BriseTokenArray left=token_slice(cond,0,split), right=token_slice(cond,split+1,cond->count-1);
+        int lv=0, ok=eval_condition(rt,&left,ctx,&lv);
+        if(ok && lv) *result=1;
+        else if(ok) ok=eval_condition(rt,&right,ctx,result);
+        token_array_free(&left); token_array_free(&right); return ok;
+    }
+    split=find_condition_keyword(cond,"and");
+    if(split!=(size_t)-1) {
+        BriseTokenArray left=token_slice(cond,0,split), right=token_slice(cond,split+1,cond->count-1);
+        int lv=0, ok=eval_condition(rt,&left,ctx,&lv);
+        if(ok && !lv) *result=0;
+        else if(ok) ok=eval_condition(rt,&right,ctx,result);
+        token_array_free(&left); token_array_free(&right); return ok;
+    }
+    if(cond->count>2 && cond->items[0].type==TOK_KEYWORD && brise_streq_ci(cond->items[0].text,"not")) {
+        BriseTokenArray inner=token_slice(cond,1,cond->count-1);
+        int v=0, ok=eval_condition(rt,&inner,ctx,&v);
+        token_array_free(&inner); if(ok) *result=!v; return ok;
+    }
+
+    size_t cmp=(size_t)-1; int depth=0;
+    for(size_t i=0;i+1<cond->count;i++) {
+        if(cond->items[i].type==TOK_LPAREN) depth++;
+        else if(cond->items[i].type==TOK_RPAREN && depth>0) depth--;
+        else if(depth==0 && cond->items[i].type==TOK_OPERATOR) {
+            const char* op=cond->items[i].text;
+            if(!strcmp(op,"==")||!strcmp(op,"!=")||!strcmp(op,">")||!strcmp(op,"<")||!strcmp(op,">=")||!strcmp(op,"<=")) { cmp=i; break; }
+        }
+    }
+    if(cmp==(size_t)-1) {
+        size_t p=0; BriseValue v;
+        if(!parse_expression(rt,cond,&p,ctx,&v)) return 0;
+        if(p!=cond->count-1) { free_value(&v); set_error(rt,ctx,"Unexpected token in condition"); return 0; }
+        *result=value_to_bool(&v); free_value(&v); return 1;
+    }
+    BriseTokenArray left=token_slice(cond,0,cmp), right=token_slice(cond,cmp+1,cond->count-1);
+    size_t lp=0,rp=0; BriseValue lv,rv; memset(&lv,0,sizeof(lv)); memset(&rv,0,sizeof(rv));
+    int ok=parse_expression(rt,&left,&lp,ctx,&lv);
+    if(ok) ok=parse_expression(rt,&right,&rp,ctx,&rv);
+    if(ok && (lp!=left.count-1 || rp!=right.count-1)) { set_error(rt,ctx,"Unexpected token in comparison"); ok=0; }
+    token_array_free(&left); token_array_free(&right);
+    if(!ok) { free_value(&lv); free_value(&rv); return 0; }
+    const char* op=cond->items[cmp].text; double ln=0.0,rn=0.0;
+    if(value_to_number(&lv,&ln) && value_to_number(&rv,&rn)) {
+        if(!strcmp(op,"==")) *result=ln==rn;
+        else if(!strcmp(op,"!=")) *result=ln!=rn;
+        else if(!strcmp(op,">")) *result=ln>rn;
+        else if(!strcmp(op,"<")) *result=ln<rn;
+        else if(!strcmp(op,">=")) *result=ln>=rn;
+        else *result=ln<=rn;
+    } else {
+        char* ls=value_to_string_heap(&lv); char* rs=value_to_string_heap(&rv);
+        if(!ls || !rs) { free(ls); free(rs); free_value(&lv); free_value(&rv); set_error(rt,ctx,"Out of memory"); return 0; }
+        int c=strcmp(ls,rs);
+        if(!strcmp(op,"==")) *result=c==0;
+        else if(!strcmp(op,"!=")) *result=c!=0;
+        else if(!strcmp(op,">")) *result=c>0;
+        else if(!strcmp(op,"<")) *result=c<0;
+        else if(!strcmp(op,">=")) *result=c>=0;
+        else *result=c<=0;
+        free(ls); free(rs);
+    }
+    free_value(&lv); free_value(&rv); return 1;
+}
+
+
     size_t cmp = (size_t)-1;
     for (size_t i=0;i<cond->count;i++) {
         if (cond->items[i].type==TOK_OPERATOR) {
@@ -723,11 +981,30 @@ static int execute_cmd_set(BriseRuntime* rt, BriseTokenArray* tokens, BriseError
     return 1;
 }
 
+static int find_action_block(const BriseTokenArray* tokens, size_t start, size_t* lp_out, size_t* rp_out) {
+    for(size_t i=start;i+1<tokens->count;i++) {
+        if(tokens->items[i].type!=TOK_LPAREN) continue;
+        int depth=0;
+        for(size_t j=i;j+1<tokens->count;j++) {
+            if(tokens->items[j].type==TOK_LPAREN) depth++;
+            else if(tokens->items[j].type==TOK_RPAREN) {
+                depth--;
+                if(depth==0) {
+                    int closes_action=tokens->items[j+1].type==TOK_END ||
+                        (tokens->items[j+1].type==TOK_KEYWORD && brise_streq_ci(tokens->items[j+1].text,"else"));
+                    if(closes_action) { *lp_out=i; *rp_out=j; return 1; }
+                    break;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static int execute_cmd_if(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
-    size_t lp=(size_t)-1;
-    for (size_t i=2;i<tokens->count;i++) if (tokens->items[i].type==TOK_LPAREN) { lp=i; break; }
-    if (lp==(size_t)-1) { set_error(rt,ctx,"if requires action block"); return 0; }
-    int ok=0; size_t rp=find_matching_rparen(rt,tokens,lp,ctx,&ok); if(!ok) return 0;
+    size_t lp=0,rp=0;
+    if(!find_action_block(tokens,2,&lp,&rp)) { set_error(rt,ctx,"if requires action block"); return 0; }
+    int ok=1;
     BriseTokenArray cond = token_slice(tokens,2,lp);
     int pass=0;
     ok = eval_condition(rt,&cond,ctx,&pass); token_array_free(&cond); if(!ok) return 0;
@@ -797,6 +1074,33 @@ static int execute_cmd_loop(BriseRuntime* rt, BriseTokenArray* tokens, BriseErro
         }
     }
     token_array_free(&tpl);
+    return 1;
+}
+
+
+static int execute_cmd_while(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
+    size_t lp=0,rp=0;
+    if(!find_action_block(tokens,2,&lp,&rp)) { set_error(rt,ctx,"while requires action block"); return 0; }
+    BriseTokenArray cond=token_slice(tokens,2,lp), action=token_slice(tokens,lp+1,rp);
+    for(size_t i=0;i<10000;i++) {
+        int pass=0;
+        if(!eval_condition(rt,&cond,ctx,&pass)) { token_array_free(&cond); token_array_free(&action); return 0; }
+        if(!pass) { token_array_free(&cond); token_array_free(&action); return 1; }
+        if(!execute_tokens(rt,&action,ctx)) { token_array_free(&cond); token_array_free(&action); return 0; }
+    }
+    int still_true=0, ok=eval_condition(rt,&cond,ctx,&still_true);
+    token_array_free(&cond); token_array_free(&action);
+    if(!ok) return 0;
+    if(still_true) { set_error(rt,ctx,"while loop exceeded 10000 iterations"); return 0; }
+    return 1;
+}
+
+static int execute_cmd_assert(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
+    BriseTokenArray cond=token_slice(tokens,2,tokens->count-1);
+    int pass=0, ok=eval_condition(rt,&cond,ctx,&pass);
+    token_array_free(&cond);
+    if(!ok) return 0;
+    if(!pass) { set_error(rt,ctx,"Assertion failed"); return 0; }
     return 1;
 }
 
@@ -1314,6 +1618,8 @@ static int execute_tokens(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
         if (brise_streq_ci(cmd,"set")) return execute_cmd_set(rt,tokens,ctx,0);
         if (brise_streq_ci(cmd,"calc")) return execute_cmd_set(rt,tokens,ctx,1);
         if (brise_streq_ci(cmd,"if")) return execute_cmd_if(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"while")) return execute_cmd_while(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"assert")) return execute_cmd_assert(rt,tokens,ctx);
         if (brise_streq_ci(cmd,"Include")) return execute_cmd_include(rt,tokens,ctx);
         if (brise_streq_ci(cmd,"List")) return execute_cmd_list(rt,tokens,ctx);
         if (brise_streq_ci(cmd,"Command")) return execute_cmd_command(rt,tokens,ctx);
