@@ -1,82 +1,111 @@
-# 🌉 brise Programming Language (v0.2.0 Alpha)
+# Brise
 
-**brise** is an ultra-lightweight interpreted programming language with a human-readable syntax. The name is inspired by the French word for "breeze": the language is fast, fresh, and free from unnecessary brackets or semicolons.
+**Brise** is a small, human-readable interpreted programming language written in C, with a C++ command-line launcher. Source files use the `.bri` extension.
 
-## 📄 Extension Specification
-Official file extension: `.bri`
+> Current development target: **v0.5.0 (development branch)**. Brise is an experimental language, not yet a stable production runtime.
 
-## ✨ Core Features v0.1
-* **Simple Output:** Use `say:` to print text.
-* **Variables:** Dynamic value assignment via `set:`.
-* **Contextual Injection:** Use variables inside strings using parentheses `(variable)`.
-* **Custom Commands:** Create your own functions using the `Command:` keyword.
-* **Lists:** Mass data processing with `List:` and the `Say to everyone:` loop.
-* **Modularity:** Connect multiple files using `Include:`.
+## Features
 
-## 🛠 Installation
-1. Download `brise_installer.exe` from the **Releases** section.
-2. Run the installer. It will automatically add `brise` to your system PATH.
-3. Restart your terminal.
+- Dynamic values: numbers, strings, booleans
+- Variables and arithmetic expressions: `set:`, `calc:`, `+ - * / % ^`
+- Comparisons and logical conditions: `== != < > <= >=`, `and`, `or`, `not`
+- Conditional execution: `if:` with optional `else:`
+- Bounded `while:` loops (10,000 iterations per loop as a safety limit)
+- Built-in string helpers: `len`, `str`, `type`, `upper`, `lower`, `trim`, `contains`, `starts_with`, `ends_with`
+- Built-in math helpers: `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, plus constants `pi` and `e`
+- Lists and `Say to everyone:`
+- User-defined command blocks with `Command:`
+- File inclusion, file read/write, console input, random values
+- Optional SDL2 Graph module and basic HTTP client
 
-## 💻 Code Example
+## Quick start
+
+Build with a C compiler and C++17 compiler:
+
+```sh
+g++ -std=c++17 main.cpp brise_runtime.c -I. -lm -o brise
+```
+
+On Windows with MinGW:
+
+```sh
+g++ -std=c++17 main.cpp brise_runtime.c -I. -o brise.exe
+```
+
+Run a program:
+
+```sh
+./brise examples/hello_world.bri
+```
+
+## Language tour
+
+### Variables, output, and arithmetic
+
 ```brise
-set:user = "Developer"
-say:"Welcome to brise, (user)!"
+set:name = "Brise"
+set:price = 120
+set:discount = 15
+calc:final_price = price - discount * 2
+say:"Hello, (name)!"
+say:final_price
+```
 
+### Built-in functions
+
+```brise
+set:title = upper(trim("  brise language  "))
+set:message = "hello"
+assert: len(title) == 14
+assert: starts_with(message, "he")
+assert: contains(message, "ell")
+calc:radius = 3
+calc:area = pi * pow(radius, 2)
+say:"Area: (area)"
+```
+
+Built-in functions currently accept up to eight arguments syntactically; each function validates its own required argument count. String case conversion is ASCII-only in this release.
+
+### Conditions
+
+```brise
+set:score = 87
+if: score >= 80 and score < 90 (say:"Good result")
+if: score < 50 or score == 0 (say:"Needs work") else: (say:"Keep going")
+if: not (score < 80) (say:"Passed")
+```
+
+### Loops
+
+```brise
+set:counter = 0
+while: counter < 3 (
+    say:counter
+    calc:counter = counter + 1
+)
+```
+
+A loop stops when its condition becomes false. To prevent accidental infinite loops, one `while:` execution is limited to 10,000 iterations.
+
+### Lists and custom commands
+
+```brise
 List: tools (Logic, Speed, Simplicity)
 Say to everyone:(say:"Feature: (item)")
+Command: greet (say:"Welcome to Brise!")
+greet
 ```
 
-## 🚀 New in v0.2 (language extensions)
+## Current limitations
 
-## 📦 Release v0.2.0 Alpha
-- Added `calc:` expression evaluation with `+ - * /` and parentheses.
-- Extended `if:` with `==`, `!=`, `>`, `<`, `>=`, `<=`.
-- `say:` now supports both quoted and raw text modes.
-- See `examples/advanced_demo.bri` for a practical script sample.
+Brise is still under active development. The current implementation is line-oriented and does not yet provide lexical scopes, parameters/return values for user-defined commands, a package manager, a formal module system, a debugger, or a stable bytecode/compiled target. Error recovery and source diagnostics need further work. The built-in HTTP client currently supports plain HTTP only; do not send sensitive data through it. File operations are relative to the source file but are not yet sandboxed.
 
-* **`calc:` arithmetic expressions** with `+ - * /` and parentheses, including numeric variables.
-* **Extended `if:` conditions** with `==`, `!=`, `>`, `<`, `>=`, `<=` for numbers and text.
-* **Flexible `say:`** now supports either quoted text or raw text after `say:`.
+The legacy BTC compiler supports only a subset of Brise syntax and must not be considered feature-equivalent to the interpreter.
 
-### Example
-```brise
-set:price = "120"
-set:discount = "15"
-calc:final = price - discount * 2
-if: final > 80 (say:"Final price: (final)")
-```
+## Tests
 
----
-# 🌉 brise Language (v0.2.0 Alpha)
+The repository includes a smoke-test program under `tests/`. The GitHub Actions workflow builds the interpreter on Linux and Windows and runs the interpreter test program.
 
-**brise** — это сверхлёгкий интерпретируемый язык программирования с человекочитаемым синтаксисом. Название вдохновлено лёгким бризом: язык быстрый, свежий и не перегружен лишними скобками или точками с запятой.
+## License
 
-## 📄 Спецификация расширения
-Официальное расширение файлов: `.bri`
-
-## ✨ Основные возможности v0.1
-* **Простой вывод:** Команда `say:` для печати текста.
-* **Переменные:** Динамическая подстановка значений через `set:`.
-* **Контекстные вставки:** Использование переменных внутри строк через круглые скобки `(variable)`.
-* **Кастомные команды:** Создание собственных функций через ключевое слово `Command:`.
-* **Списки:** Массовая обработка данных через `List:` и циклическую команду `Say to everyone:`.
-* **Модульность:** Подключение других файлов через `Include:`.
-
-## 🛠 Установка (Классический метод)
-На данный момент язык находится в стадии Alpha. 
-
-1. Скачайте `brise_installer.exe` из раздела **Releases**.
-2. Запустите установщик. Он автоматически добавит `brise` в системную переменную PATH.
-3. Перезагрузите терминал.
-
-## 💻 Примеры кода
-
-### Приветствие и переменные
-```brise
-set:name = "Разработчик"
-say:"Добро пожаловать в brise, (name)!"
-
-
-## 🌐 Website on GitHub
-If the landing page is not visible on GitHub, enable **GitHub Pages** in repository settings and use `index.html` from the root branch.
+MIT. See [LICENSE](LICENSE).
