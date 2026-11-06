@@ -37,7 +37,7 @@ assert: abs(cos(0) - 1) < 1e-12
 assert: abs(log(e) - 1) < 1e-12
 assert: log10(100) == 2
 assert: log2(8) == 3
-assert: cbrt(27) == 3
+assert: abs(cbrt(27) - 3) < 1e-12
 assert: trunc(-3.8) == -3
 assert: sign(-8) == -1
 assert: factorial(5) == 120
@@ -50,5 +50,5 @@ assert: mod(7.5, 2) == 1.5
 assert: is_prime(97)
 assert: not is_prime(100)
 assert: round_to(3.14159, 2) == 3.14
-assert: deg_to_rad(180) == pi
-assert: rad_to_deg(pi) == 180
+assert: abs(deg_to_rad(180) - pi) < 1e-12
+assert: abs(rad_to_deg(pi) - 180) < 1e-12

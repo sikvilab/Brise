@@ -1015,7 +1015,7 @@ static int append_response_chunk(char** dst, size_t* length, const char* data, s
     if (!next) return 0;
     if (amount) memcpy(next+*length,data,amount);
     *length+=amount;
-    next[*length]=' ';
+    next[*length]='\0';
     *dst=next;
     return 1;
 }
