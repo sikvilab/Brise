@@ -10,6 +10,8 @@ This file separates implemented features from future language-design work. Items
 - [x] Logical conditions: and, or, not
 - [x] Bounded while: loop
 - [x] Expanded math library: trigonometry, logarithms, interpolation, clamping, number theory and rounding
+- [x] Dense numeric matrices with bounded allocation, indexed access, identity, addition, subtraction, multiplication, transpose, scaling, determinant and inverse
+- [x] Explicitly allocated numeric memory blocks with indexed access, shared allocation budget and `free:`
 - [x] Assertion command and math smoke tests
 - [x] File I/O restricted to regular files in the script directory, with symlink rejection and size/error checks
 - [x] HTTPS with certificate and hostname verification (WinHTTP on Windows, OpenSSL on POSIX)
