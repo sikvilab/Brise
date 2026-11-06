@@ -1,0 +1,4 @@
+write:("brise_io.tmp", "safe-file-io")
+read:contents("brise_io.tmp")
+assert: contents == "safe-file-io"
+say:"File I/O smoke test passed."

@@ -2,6 +2,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <stdint.h>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #define MAX_LINE 2048
 #define MAX_SYMBOLS 512
@@ -442,6 +451,47 @@ static char* replace_extension(const char* path, const char* ext) {
     return grown;
 }
 
+static int run_gcc_process(const char* c_path, const char* binary_path, int uses_tasks) {
+#ifdef _WIN32
+    const char* arguments[7];
+    size_t count=0;
+    arguments[count++]="gcc";
+    arguments[count++]=c_path;
+    arguments[count++]="-o";
+    arguments[count++]=binary_path;
+    if (uses_tasks) arguments[count++]="-pthread";
+    arguments[count]=NULL;
+    intptr_t status=_spawnvp(_P_WAIT,"gcc",arguments);
+    if (status==-1) { perror("BTC: unable to start gcc"); return -1; }
+    return (int)status;
+#else
+    pid_t child=fork();
+    if (child<0) { perror("BTC: fork failed"); return -1; }
+    if (child==0) {
+        char* arguments[6];
+        int count=0;
+        arguments[count++]="gcc";
+        arguments[count++]=(char*)c_path;
+        arguments[count++]="-o";
+        arguments[count++]=(char*)binary_path;
+        if (uses_tasks) arguments[count++]="-pthread";
+        arguments[count]=NULL;
+        execvp("gcc",arguments);
+        perror("BTC: unable to execute gcc");
+        _exit(127);
+    }
+    int status=0;
+    while (waitpid(child,&status,0)<0) {
+        if (errno==EINTR) continue;
+        perror("BTC: waitpid failed");
+        return -1;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128+WTERMSIG(status);
+    return -1;
+#endif
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printf("BTC (Brise To C) preview\n");
@@ -477,11 +527,9 @@ int main(int argc, char** argv) {
 
     printf("BTC: generated %s\n", c_path);
     if (!no_build) {
-        char cmd[4096];
-        snprintf(cmd, sizeof(cmd), "gcc \"%s\" -o \"%s\"%s", c_path, bin_path, c.uses_tasks ? " -pthread" : "");
-        int rc = system(cmd);
+        int rc=run_gcc_process(c_path,bin_path,c.uses_tasks);
         if (rc != 0) {
-            fprintf(stderr, "BTC: build failed: %s\n", cmd);
+            fprintf(stderr, "BTC: gcc process failed with status %d\n",rc);
             free(c.tasks.data);
             free(c.main_body.data);
             free(c_path);

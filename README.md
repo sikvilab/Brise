@@ -1,110 +1,146 @@
 # Brise
 
-**Brise** is a small, human-readable interpreted programming language written in C, with a C++ command-line launcher. Source files use the `.bri` extension.
+**Brise** is a small, human-readable interpreted programming language written in C, with a C++ command-line launcher. Source files use the .bri extension.
 
 > Current development target: **v0.5.0 (development branch)**. Brise is experimental and is not yet a stable production runtime.
 
 ## Features
 
 - Dynamic values: numbers, strings, booleans
-- Variables and arithmetic: `set:`, `calc:`, `+ - * / % ^`
-- Comparisons and logical conditions: `== != < > <= >=`, `and`, `or`, `not`
-- Conditional execution: `if:` with optional `else:`
-- Bounded `while:` loops (10,000 iterations per loop)
-- String functions: `len`, `str`, `type`, `upper`, `lower`, `trim`, `contains`, `starts_with`, `ends_with`
-- Math functions: `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`; constants `pi` and `e`
-- Lists and `Say to everyone:`
-- User-defined command blocks with `Command:`
-- File inclusion, file read/write, console input, random values
-- Optional SDL2 Graph module and a basic HTTP client
+- Variables and arithmetic: set:, calc:, + - * / % ^
+- Comparisons and logical conditions: == != < > <= >=, and, or, not
+- Conditional execution: if: with optional else:
+- Bounded while: loops (10,000 iterations per loop)
+- String functions: len, str, type, upper, lower, trim, contains, starts_with, ends_with
+- Math functions: abs, sqrt, floor, ceil, round, trunc, pow, mod, min, max, clamp, lerp, round_to
+- Trigonometry and logarithms: sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, exp, log, ln, log10, log2, cbrt
+- Number utilities: sign, factorial, gcd, lcm, hypot, is_prime, is_finite, is_nan, deg_to_rad, rad_to_deg
+- Constants: pi, tau, e, sqrt2, ln2, ln10
+- Lists, custom command blocks, file inclusion, console input and random values
+- File I/O restricted to regular files in the script's own directory (no path separators or symlinks; 4 MiB limit)
+- Netwe supports HTTP and HTTPS; HTTPS validates the server certificate and hostname
+- Optional SDL2 Graph module
 
 ## Build and run
 
-Linux / macOS (GCC or Clang with C++17):
+### Linux (GCC, C++17, OpenSSL 1.1.1+)
 
-```sh
-g++ -std=c++17 main.cpp brise_runtime.c -I. -lm -o brise
+Install prerequisites on Debian/Ubuntu:
+
+~~~sh
+sudo apt-get install g++ gcc libssl-dev
+~~~
+
+Build and run:
+
+~~~sh
+g++ -std=c++17 main.cpp brise_runtime.c -I. -lssl -lcrypto -ldl -lm -o brise
 ./brise examples/hello_world.bri
-```
+~~~
 
-Windows (MinGW):
+### Windows (MinGW)
 
-```powershell
-g++ -std=c++17 main.cpp brise_runtime.c -I. -o brise.exe
+HTTPS uses the Windows WinHTTP API and Windows certificate store.
+
+~~~powershell
+g++ -std=c++17 main.cpp brise_runtime.c -I. -lwinhttp -o brise.exe
 .\brise.exe examples/hello_world.bri
-```
+~~~
 
 ## Language tour
 
-### Variables, output, arithmetic
+### Variables, output and arithmetic
 
-```brise
+~~~brise
 set:name = "Brise"
 set:price = 120
 set:discount = 15
 calc:final_price = price - discount * 2
 say:"Hello, (name)!"
 say:final_price
-```
+~~~
 
-### Built-in functions
+### Scientific notation and mathematical functions
 
-```brise
-set:title = upper(trim("  brise language  "))
-assert: len(title) == 14
-assert: starts_with(title, "BRI")
-assert: contains(title, "LANG")
-calc:radius = 3
-calc:area = pi * pow(radius, 2)
-say:"Area: (area)"
-```
+~~~brise
+calc:mass = 1.25e2
+calc:area = pi * pow(3, 2)
+calc:angle = deg_to_rad(90)
+calc:height = sin(angle) * 10
+calc:rounded = round_to(3.14159, 3)
+calc:bounded = clamp(height, 0, 10)
+say:"Area: (area), height: (height)"
+assert: factorial(5) == 120
+assert: gcd(54, 24) == 6
+assert: is_prime(97)
+~~~
 
-String case conversion is ASCII-only in this development version.
+See examples/math_showcase.bri for a longer tour.
 
 ### Conditions
 
-```brise
+~~~brise
 set:score = 87
 if: score >= 80 and score < 90 (say:"Good result")
 if: score < 50 or score == 0 (say:"Needs work") else: (say:"Keep going")
 if: not (score < 80) (say:"Passed")
-```
+~~~
 
 ### Loops
 
-```brise
+~~~brise
 set:counter = 0
 while: counter < 3 (calc:counter = counter + 1)
 say:"Counter: (counter)"
-```
+~~~
 
-The interpreter currently reads one statement per source line, so control-flow action blocks must remain on the same line. A loop stops when its condition becomes false. To prevent accidental infinite loops, each `while:` execution is limited to 10,000 iterations.
+The interpreter currently reads one statement per source line, so control-flow action blocks must remain on the same line. Each while: execution is limited to 10,000 iterations.
 
-### Lists and custom commands
+### Networking
 
-```brise
-List: tools (Logic, Speed, Simplicity)
-Say to everyone:(say:"Feature: (item)")
-Command: greet (say:"Welcome to Brise!")
-greet
-```
+~~~brise
+Netwe:page("https://example.com/")
+say:page
+~~~
+
+On Linux, Brise uses OpenSSL with certificate-chain and hostname verification. On Windows, it uses WinHTTP and the Windows certificate store. Network requests use connection/read timeouts and are limited to 4 MiB of response data. DNS resolution uses the operating-system resolver and may take longer than the socket timeout. Redirects are not followed automatically.
+
+### Safe file I/O
+
+read: and write: accept only a single regular filename in the same directory as the current .bri file. Directory separators, absolute paths, symlinks and reparse points are rejected. Individual file reads/writes are limited to 4 MiB.
+
+~~~brise
+write:("notes.txt", "Hello from Brise")
+read:notes("notes.txt")
+say:notes
+~~~
+
+### BTC compiler
+
+BTC is a preview transpiler that supports only a subset of Brise syntax. It does not yet have full feature parity with the interpreter. The compiler now starts GCC directly with an argument array rather than invoking a shell.
 
 ## Known limitations
 
-Brise is still under active development. The current implementation does not yet provide lexical scopes, parameters or return values for user-defined commands, a package manager, a formal module system, a debugger, or a stable bytecode target. Error recovery and source diagnostics need more work.
-
-The built-in HTTP client currently supports plain HTTP only; do not send sensitive data through it. File operations are relative to the source file but are not sandboxed. The legacy BTC compiler supports only a subset of Brise syntax and is not feature-equivalent to the interpreter.
+Brise is experimental. It does not yet provide lexical scopes, parameters or return values for user-defined commands, a package manager, a formal module system, a debugger, stable bytecode, or a full AST-based multiline parser. Error recovery and source diagnostics need more work. String case conversion is ASCII-only. Netwe: currently supports GET requests only and does not automatically follow redirects.
 
 ## Tests
 
-Run the smoke tests after building:
+Run interpreter checks:
 
-```sh
+~~~sh
 ./brise tests/smoke.bri
-```
+~~~
 
-GitHub Actions is configured to build and run these tests on Linux and Windows.
+Run the BTC test:
+
+~~~sh
+./btc tests/btc_smoke.bri --no-build
+gcc -std=c11 tests/btc_smoke.c -o tests/btc_smoke
+./tests/btc_smoke
+~~~
+
+GitHub Actions builds the interpreter and BTC on Linux and Windows, runs smoke tests, checks file path traversal, and performs a local certificate-verified HTTPS test on Linux.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See LICENSE.

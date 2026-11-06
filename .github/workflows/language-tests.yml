@@ -11,10 +11,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install OpenSSL development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev
       - name: Build interpreter
-        run: g++ -std=c++17 main.cpp brise_runtime.c -I. -lm -o brise
-      - name: Run smoke tests
+        run: g++ -std=c++17 -Wall -Wextra main.cpp brise_runtime.c -I. -lssl -lcrypto -ldl -lm -o brise
+      - name: Build BTC
+        run: gcc -std=c11 -Wall -Wextra -pedantic btc.c -o btc
+      - name: Run interpreter smoke tests
         run: ./brise tests/smoke.bri
+      - name: Run file I/O smoke tests
+        run: |
+          ./brise tests/file_io_smoke.bri
+          rm -f tests/brise_io.tmp
+      - name: Reject file path traversal
+        run: |
+          if ./brise tests/path_traversal.bri; then
+            echo "Path traversal unexpectedly succeeded"
+            exit 1
+          fi
+      - name: Run BTC transpiler smoke test
+        run: |
+          ./btc tests/btc_smoke.bri --no-build
+          gcc -std=c11 tests/btc_smoke.c -o tests/btc_smoke
+          test "$(./tests/btc_smoke)" = "13"
+      - name: Run local HTTPS integration test
+        run: |
+          set -eu
+          tmpdir="$(mktemp -d)"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$tmpdir/key.pem" -out "$tmpdir/cert.pem" -days 1 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+          printf 'brise-https-ok\n' > "$tmpdir/index.html"
+          (cd "$tmpdir" && openssl s_server -quiet -accept 18443 -cert cert.pem -key key.pem -WWW >server.log 2>&1) &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; rm -rf "$tmpdir"' EXIT
+          for attempt in $(seq 1 20); do
+            if (echo >/dev/tcp/127.0.0.1/18443) 2>/dev/null; then break; fi
+            sleep 0.25
+          done
+          SSL_CERT_FILE="$tmpdir/cert.pem" ./brise tests/https_smoke.bri
 
   windows:
     runs-on: windows-latest
@@ -25,6 +60,22 @@ jobs:
           choco install mingw -y
           echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $env:GITHUB_PATH
       - name: Build interpreter
-        run: g++ -std=c++17 main.cpp brise_runtime.c -I. -o brise.exe -static -static-libgcc -static-libstdc++
-      - name: Run smoke tests
+        run: g++ -std=c++17 -Wall -Wextra main.cpp brise_runtime.c -I. -lwinhttp -o brise.exe -static -static-libgcc -static-libstdc++
+      - name: Build BTC
+        run: gcc -std=c11 -Wall -Wextra -pedantic btc.c -o btc.exe
+      - name: Run interpreter smoke tests
         run: .\brise.exe tests/smoke.bri
+      - name: Run file I/O smoke tests
+        run: |
+          .\brise.exe tests/file_io_smoke.bri
+          Remove-Item -ErrorAction SilentlyContinue tests\brise_io.tmp
+      - name: Reject file path traversal
+        run: |
+          .\brise.exe tests/path_traversal.bri
+          if ($LASTEXITCODE -eq 0) { throw "Path traversal unexpectedly succeeded" }
+      - name: Run BTC transpiler smoke test
+        run: |
+          .\btc.exe tests/btc_smoke.bri --no-build
+          gcc -std=c11 tests/btc_smoke.c -o tests\btc_smoke.exe
+          .\tests\btc_smoke.exe
+          if ($LASTEXITCODE -ne 0) { throw "BTC generated program failed" }

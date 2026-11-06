@@ -5,29 +5,34 @@ This file separates implemented features from future language-design work. Items
 ## Implemented in the v0.5.0 development branch
 
 - [x] Number, string and boolean values
-- [x] Arithmetic expressions and comparisons
-- [x] Logical conditions: `and`, `or`, `not`
-- [x] Bounded `while:` loop
-- [x] Basic string and math built-ins
-- [x] Assertion command for smoke tests
-- [x] Linux and Windows CI workflow
+- [x] Arithmetic expressions, finite-result checks, floating-point remainder and exponentiation
+- [x] Scientific-notation numeric literals
+- [x] Logical conditions: and, or, not
+- [x] Bounded while: loop
+- [x] Expanded math library: trigonometry, logarithms, interpolation, clamping, number theory and rounding
+- [x] Assertion command and math smoke tests
+- [x] File I/O restricted to regular files in the script directory, with symlink rejection and size/error checks
+- [x] HTTPS with certificate and hostname verification (WinHTTP on Windows, OpenSSL on POSIX)
+- [x] Network connect/read timeouts and 4 MiB response cap
+- [x] BTC invokes GCC without a shell
+- [x] Linux and Windows CI for interpreter and BTC smoke tests
 
 ## Next milestones
 
 ### Language core
 - [ ] Multi-line blocks and a real parser/AST
 - [ ] Escaped strings and Unicode-aware string operations
-- [ ] Consistent operator precedence, including boolean expressions in a unified expression grammar
+- [ ] Unified expression grammar including boolean operators and consistent precedence
 - [ ] Lexical scopes, function parameters and return values
 - [ ] Arrays/maps as first-class values
 
 ### Runtime and developer experience
-- [ ] Sandboxed file access and configurable permissions
-- [ ] HTTPS support and request timeouts
 - [ ] Structured error codes and source spans
 - [ ] Debugger / REPL
 - [ ] Package and module manager
 - [ ] Stable language specification and semantic versioning
+- [ ] Explicit redirect policy and configurable network permissions
+- [ ] Bounded DNS lookup and cancellation support
 
 ### Compiler
 - [ ] Define the supported BTC language subset

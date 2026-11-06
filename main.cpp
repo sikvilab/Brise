@@ -4,7 +4,7 @@
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cout << "brise v0.4.0-dev | C core + C++ launcher" << std::endl;
+        std::cout << "brise v0.5.0-dev | C core + C++ launcher" << std::endl;
         std::cout << "Usage: brise <file.bri>" << std::endl;
         return 0;
     }

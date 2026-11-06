@@ -7,6 +7,8 @@
 #include <time.h>
 #include <errno.h>
 #include <math.h>
+#include <stdint.h>
+#include <limits.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -15,6 +17,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <winhttp.h>
+#include <io.h>
+#include <fcntl.h>
 typedef SOCKET BriseSocket;
 typedef int BriseIoSize;
 #define BRISE_INVALID_SOCKET INVALID_SOCKET
@@ -71,6 +76,13 @@ static int brise_load_winsock(void) {
 #else
 #include <dlfcn.h>
 #include <netdb.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/select.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -90,6 +102,8 @@ typedef ssize_t BriseIoSize;
 #endif
 
 #define MAX_ERROR_LEN 512
+#define BRISE_MAX_FILE_BYTES (4u * 1024u * 1024u)
+#define BRISE_MAX_NETWE_BYTES (4u * 1024u * 1024u)
 
 typedef struct {
     char* key;
@@ -381,11 +395,18 @@ static BriseTokenArray tokenize_line(const char* line) {
             continue;
         }
         if (isdigit((unsigned char)c) || c=='.') {
-            size_t s=i;
-            while (i<n && (isdigit((unsigned char)line[i])||line[i]=='.')) i++;
-            char* t = xstrndup(line+s, i-s);
-            token_push(&out, TOK_NUMBER, t);
-            free(t);
+            char* end=NULL;
+            errno=0;
+            (void)strtod(line+i,&end);
+            if (end==line+i) { token_push(&out,TOK_OPERATOR,"?"); i++; continue; }
+            size_t length=(size_t)(end-(line+i));
+            char* number=xstrndup(line+i,length);
+            if (!number || errno==ERANGE || !isfinite(strtod(number?number:"0",NULL))) {
+                free(number); token_push(&out,TOK_OPERATOR,"?"); return out;
+            }
+            token_push(&out,TOK_NUMBER,number);
+            free(number);
+            i+=length;
             continue;
         }
         if (c=='"') {
@@ -498,80 +519,191 @@ static int values_equal(const BriseValue* a, const BriseValue* b) {
 
 static int evaluate_builtin(BriseRuntime* rt, BriseErrorContext ctx, const char* name,
                             BriseValue* args, size_t argc, BriseValue* out) {
-    double a = 0.0, b = 0.0;
-    char* s = NULL;
-    char* t = NULL;
-
+    double a=0.0,b=0.0,c=0.0,result=0.0;
+    char* s=NULL;
+    char* t=NULL;
     if (brise_streq_ci(name,"len") || brise_streq_ci(name,"str") ||
         brise_streq_ci(name,"type") || brise_streq_ci(name,"upper") ||
         brise_streq_ci(name,"lower") || brise_streq_ci(name,"trim") ||
         brise_streq_ci(name,"to_number")) {
         if (!builtin_arity(rt,ctx,name,argc,1)) return 0;
         if (brise_streq_ci(name,"type")) {
-            *out = value_string(args[0].type == BRISE_VAL_STRING ? "string" :
-                args[0].type == BRISE_VAL_NUMBER ? "number" : "boolean");
-            return out->string_value != NULL;
+            *out=value_string(args[0].type==BRISE_VAL_STRING?"string":
+                args[0].type==BRISE_VAL_NUMBER?"number":"boolean");
+            return out->string_value!=NULL;
         }
         if (brise_streq_ci(name,"to_number")) {
-            if (!value_to_number(&args[0],&a)) { set_error(rt,ctx,"to_number cannot convert value"); return 0; }
-            *out = value_number(a); return 1;
+            if (!value_to_number(&args[0],&a) || !isfinite(a)) {
+                set_error(rt,ctx,"to_number cannot convert value to a finite number"); return 0;
+            }
+            *out=value_number(a); return 1;
         }
-        s = value_to_string_heap(&args[0]);
+        s=value_to_string_heap(&args[0]);
         if (!s) { set_error(rt,ctx,"Out of memory"); return 0; }
         if (brise_streq_ci(name,"len")) { *out=value_number((double)strlen(s)); free(s); return 1; }
-        if (brise_streq_ci(name,"str")) { *out=value_string(s); free(s); return out->string_value != NULL; }
+        if (brise_streq_ci(name,"str")) {
+            *out=value_string(s); free(s);
+            if (!out->string_value) set_error(rt,ctx,"Out of memory");
+            return out->string_value!=NULL;
+        }
         if (brise_streq_ci(name,"upper") || brise_streq_ci(name,"lower")) {
             t=ascii_transform(s,brise_streq_ci(name,"upper")); free(s);
         } else { t=trim_string_copy(s); free(s); }
         if (!t) { set_error(rt,ctx,"Out of memory"); return 0; }
-        *out=value_string(t); free(t); return out->string_value != NULL;
+        *out=value_string(t); free(t);
+        if (!out->string_value) set_error(rt,ctx,"Out of memory");
+        return out->string_value!=NULL;
     }
-
-    if (brise_streq_ci(name,"contains") || brise_streq_ci(name,"starts_with") || brise_streq_ci(name,"ends_with")) {
+    if (brise_streq_ci(name,"contains") || brise_streq_ci(name,"starts_with") ||
+        brise_streq_ci(name,"ends_with")) {
         if (!builtin_arity(rt,ctx,name,argc,2)) return 0;
         s=value_to_string_heap(&args[0]); t=value_to_string_heap(&args[1]);
         if (!s || !t) { free(s); free(t); set_error(rt,ctx,"Out of memory"); return 0; }
         int found=0;
         if (brise_streq_ci(name,"contains")) found=strstr(s,t)!=NULL;
         else if (brise_streq_ci(name,"starts_with")) found=strncmp(s,t,strlen(t))==0;
-        else { size_t sl=strlen(s), tl=strlen(t); found=tl<=sl && strcmp(s+sl-tl,t)==0; }
+        else { size_t sl=strlen(s),tl=strlen(t); found=tl<=sl && strcmp(s+sl-tl,t)==0; }
         free(s); free(t); *out=value_bool(found); return 1;
     }
-
     if (brise_streq_ci(name,"assert_eq")) {
         if (!builtin_arity(rt,ctx,name,argc,2)) return 0;
         *out=value_bool(values_equal(&args[0],&args[1])); return 1;
     }
-
+    if (brise_streq_ci(name,"is_finite") || brise_streq_ci(name,"is_nan")) {
+        if (!builtin_arity(rt,ctx,name,argc,1) || !value_to_number(&args[0],&a)) {
+            set_error(rt,ctx,"Math predicate expects one numeric argument"); return 0;
+        }
+        *out=value_bool(brise_streq_ci(name,"is_finite")?isfinite(a):isnan(a)); return 1;
+    }
     if (brise_streq_ci(name,"abs") || brise_streq_ci(name,"sqrt") ||
         brise_streq_ci(name,"floor") || brise_streq_ci(name,"ceil") ||
-        brise_streq_ci(name,"round")) {
+        brise_streq_ci(name,"round") || brise_streq_ci(name,"trunc") ||
+        brise_streq_ci(name,"sin") || brise_streq_ci(name,"cos") ||
+        brise_streq_ci(name,"tan") || brise_streq_ci(name,"asin") ||
+        brise_streq_ci(name,"acos") || brise_streq_ci(name,"atan") ||
+        brise_streq_ci(name,"sinh") || brise_streq_ci(name,"cosh") ||
+        brise_streq_ci(name,"tanh") || brise_streq_ci(name,"exp") ||
+        brise_streq_ci(name,"log") || brise_streq_ci(name,"ln") ||
+        brise_streq_ci(name,"log10") || brise_streq_ci(name,"log2") ||
+        brise_streq_ci(name,"cbrt") || brise_streq_ci(name,"sign") ||
+        brise_streq_ci(name,"deg_to_rad") || brise_streq_ci(name,"rad_to_deg") ||
+        brise_streq_ci(name,"factorial") || brise_streq_ci(name,"is_prime")) {
         if (!builtin_arity(rt,ctx,name,argc,1) || !value_to_number(&args[0],&a)) {
             set_error(rt,ctx,"Math function expects one numeric argument"); return 0;
         }
-        if (brise_streq_ci(name,"abs")) *out=value_number(fabs(a));
-        else if (brise_streq_ci(name,"sqrt")) {
+        if (brise_streq_ci(name,"is_prime")) {
+            if (!isfinite(a) || floor(a)!=a || a>1000000000000.0) {
+                set_error(rt,ctx,"is_prime expects an integer between 0 and 1e12"); return 0;
+            }
+            if (a<2.0) { *out=value_bool(0); return 1; }
+            unsigned long long n=(unsigned long long)a;
+            int prime=1;
+            for (unsigned long long d=2;d<=n/d;++d) if (n%d==0) { prime=0; break; }
+            *out=value_bool(prime); return 1;
+        }
+        if (brise_streq_ci(name,"factorial")) {
+            if (!isfinite(a) || floor(a)!=a || a<0.0 || a>170.0) {
+                set_error(rt,ctx,"factorial expects an integer from 0 through 170"); return 0;
+            }
+            result=1.0;
+            for (int i=2;i<=(int)a;++i) result*=(double)i;
+        } else if (brise_streq_ci(name,"sqrt")) {
             if (a<0.0) { set_error(rt,ctx,"sqrt expects a non-negative number"); return 0; }
-            *out=value_number(sqrt(a));
-        } else if (brise_streq_ci(name,"floor")) *out=value_number(floor(a));
-        else if (brise_streq_ci(name,"ceil")) *out=value_number(ceil(a));
-        else *out=value_number(round(a));
-        return 1;
+            result=sqrt(a);
+        } else if (brise_streq_ci(name,"abs")) result=fabs(a);
+        else if (brise_streq_ci(name,"floor")) result=floor(a);
+        else if (brise_streq_ci(name,"ceil")) result=ceil(a);
+        else if (brise_streq_ci(name,"round")) result=round(a);
+        else if (brise_streq_ci(name,"trunc")) result=trunc(a);
+        else if (brise_streq_ci(name,"sin")) result=sin(a);
+        else if (brise_streq_ci(name,"cos")) result=cos(a);
+        else if (brise_streq_ci(name,"tan")) result=tan(a);
+        else if (brise_streq_ci(name,"asin")) {
+            if (a < -1.0 || a > 1.0) { set_error(rt,ctx,"asin expects a value from -1 through 1"); return 0; }
+            result=asin(a);
+        } else if (brise_streq_ci(name,"acos")) {
+            if (a < -1.0 || a > 1.0) { set_error(rt,ctx,"acos expects a value from -1 through 1"); return 0; }
+            result=acos(a);
+        } else if (brise_streq_ci(name,"atan")) result=atan(a);
+        else if (brise_streq_ci(name,"sinh")) result=sinh(a);
+        else if (brise_streq_ci(name,"cosh")) result=cosh(a);
+        else if (brise_streq_ci(name,"tanh")) result=tanh(a);
+        else if (brise_streq_ci(name,"exp")) result=exp(a);
+        else if (brise_streq_ci(name,"log") || brise_streq_ci(name,"ln")) {
+            if (a<=0.0) { set_error(rt,ctx,"log expects a positive number"); return 0; }
+            result=log(a);
+        } else if (brise_streq_ci(name,"log10")) {
+            if (a<=0.0) { set_error(rt,ctx,"log10 expects a positive number"); return 0; }
+            result=log10(a);
+        } else if (brise_streq_ci(name,"log2")) {
+            if (a<=0.0) { set_error(rt,ctx,"log2 expects a positive number"); return 0; }
+            result=log2(a);
+        } else if (brise_streq_ci(name,"cbrt")) result=cbrt(a);
+        else if (brise_streq_ci(name,"sign")) result=a>0.0?1.0:(a<0.0?-1.0:0.0);
+        else if (brise_streq_ci(name,"deg_to_rad")) result=a*(3.14159265358979323846/180.0);
+        else if (brise_streq_ci(name,"rad_to_deg")) result=a*(180.0/3.14159265358979323846);
+        if (!isfinite(result)) { set_error(rt,ctx,"Math result is not finite"); return 0; }
+        *out=value_number(result); return 1;
     }
-
-    if (brise_streq_ci(name,"min") || brise_streq_ci(name,"max") || brise_streq_ci(name,"pow")) {
+    if (brise_streq_ci(name,"min") || brise_streq_ci(name,"max") ||
+        brise_streq_ci(name,"pow") || brise_streq_ci(name,"mod") ||
+        brise_streq_ci(name,"hypot") || brise_streq_ci(name,"atan2") ||
+        brise_streq_ci(name,"gcd") || brise_streq_ci(name,"lcm")) {
         if (!builtin_arity(rt,ctx,name,argc,2) ||
             !value_to_number(&args[0],&a) || !value_to_number(&args[1],&b)) {
             set_error(rt,ctx,"Math function expects two numeric arguments"); return 0;
         }
-        if (brise_streq_ci(name,"min")) *out=value_number(a<b?a:b);
-        else if (brise_streq_ci(name,"max")) *out=value_number(a>b?a:b);
-        else {
-            double result=pow(a,b);
-            if (!isfinite(result)) { set_error(rt,ctx,"pow result is not finite"); return 0; }
-            *out=value_number(result);
+        if (brise_streq_ci(name,"min")) result=a<b?a:b;
+        else if (brise_streq_ci(name,"max")) result=a>b?a:b;
+        else if (brise_streq_ci(name,"hypot")) result=hypot(a,b);
+        else if (brise_streq_ci(name,"atan2")) result=atan2(a,b);
+        else if (brise_streq_ci(name,"pow")) result=pow(a,b);
+        else if (brise_streq_ci(name,"mod")) {
+            if (b==0.0) { set_error(rt,ctx,"mod divisor cannot be zero"); return 0; }
+            result=fmod(a,b);
+        } else {
+            const double safe_integer=9007199254740991.0;
+            if (!isfinite(a) || !isfinite(b) || floor(a)!=a || floor(b)!=b ||
+                fabs(a)>safe_integer || fabs(b)>safe_integer) {
+                set_error(rt,ctx,"gcd/lcm expect finite safe integers"); return 0;
+            }
+            unsigned long long ua=(unsigned long long)fabs(a),ub=(unsigned long long)fabs(b);
+            unsigned long long x=ua,y=ub;
+            while (y) { unsigned long long rem=x%y; x=y; y=rem; }
+            if (brise_streq_ci(name,"gcd")) result=(double)x;
+            else if (x==0) result=0.0;
+            else {
+                unsigned long long divided=ua/x;
+                if (ub && divided>ULLONG_MAX/ub) {
+                    set_error(rt,ctx,"lcm result exceeds supported integer range"); return 0;
+                }
+                result=(double)(divided*ub);
+            }
         }
-        return 1;
+        if (!isfinite(result)) { set_error(rt,ctx,"Math result is not finite"); return 0; }
+        *out=value_number(result); return 1;
+    }
+    if (brise_streq_ci(name,"clamp") || brise_streq_ci(name,"lerp")) {
+        if (!builtin_arity(rt,ctx,name,argc,3) || !value_to_number(&args[0],&a) ||
+            !value_to_number(&args[1],&b) || !value_to_number(&args[2],&c)) {
+            set_error(rt,ctx,"Math function expects three numeric arguments"); return 0;
+        }
+        if (brise_streq_ci(name,"clamp")) {
+            if (b>c) { set_error(rt,ctx,"clamp minimum cannot exceed maximum"); return 0; }
+            result=a<b?b:(a>c?c:a);
+        } else result=a+(b-a)*c;
+        if (!isfinite(result)) { set_error(rt,ctx,"Math result is not finite"); return 0; }
+        *out=value_number(result); return 1;
+    }
+    if (brise_streq_ci(name,"round_to")) {
+        if (!builtin_arity(rt,ctx,name,argc,2) || !value_to_number(&args[0],&a) ||
+            !value_to_number(&args[1],&b) || !isfinite(b) || floor(b)!=b || b < -12.0 || b > 12.0) {
+            set_error(rt,ctx,"round_to expects a number and integer digits from -12 through 12"); return 0;
+        }
+        double scale=pow(10.0,b);
+        result=round(a*scale)/scale;
+        if (!isfinite(result)) { set_error(rt,ctx,"round_to result is not finite"); return 0; }
+        *out=value_number(result); return 1;
     }
     set_error(rt,ctx,"Unknown built-in function");
     return 0;
@@ -633,6 +765,10 @@ static int parse_primary(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseE
     if (tk->type == TOK_IDENTIFIER || tk->type == TOK_KEYWORD) {
         if (brise_streq_ci(tk->text,"pi")) { *out=value_number(3.14159265358979323846); (*p)++; return 1; }
         if (brise_streq_ci(tk->text,"e")) { *out=value_number(2.71828182845904523536); (*p)++; return 1; }
+        if (brise_streq_ci(tk->text,"tau")) { *out=value_number(6.28318530717958647692); (*p)++; return 1; }
+        if (brise_streq_ci(tk->text,"sqrt2")) { *out=value_number(1.41421356237309504880); (*p)++; return 1; }
+        if (brise_streq_ci(tk->text,"ln2")) { *out=value_number(0.69314718055994530942); (*p)++; return 1; }
+        if (brise_streq_ci(tk->text,"ln10")) { *out=value_number(2.30258509299404568402); (*p)++; return 1; }
         const VarEntry* v = find_var_const(rt, tk->text);
         if (!v) { set_error(rt, ctx, "Unknown variable"); return 0; }
         *out = clone_value(&v->value); (*p)++; return 1;
@@ -662,74 +798,87 @@ static int parse_factor(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseEr
 
 static int parse_power(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
     if (!parse_factor(rt,t,p,ctx,out)) return 0;
-    if (t->items[*p].type == TOK_OPERATOR && strcmp(t->items[*p].text,"^")==0) {
+    if (t->items[*p].type==TOK_OPERATOR && strcmp(t->items[*p].text,"^")==0) {
         (*p)++;
         BriseValue right;
         if (!parse_power(rt,t,p,ctx,&right)) { free_value(out); return 0; }
-        double l,r;
-        if (!value_to_number(out,&l) || !value_to_number(&right,&r)) {
+        double left_number=0.0,right_number=0.0;
+        if (!value_to_number(out,&left_number) || !value_to_number(&right,&right_number)) {
             free_value(out); free_value(&right); set_error(rt,ctx,"Power expects numbers"); return 0;
         }
         free_value(out); free_value(&right);
-        double res = 1.0;
-        int exp = (int)r;
-        if (exp < 0) {
-            int e = -exp;
-            for (int i=0;i<e;i++) res *= l;
-            res = 1.0/res;
-        } else {
-            for (int i=0;i<exp;i++) res *= l;
-        }
-        *out = value_number(res);
+        double powered=pow(left_number,right_number);
+        if (!isfinite(powered)) { set_error(rt,ctx,"Power result is invalid or outside the finite numeric range"); return 0; }
+        *out=value_number(powered);
     }
     return 1;
 }
 
 static int parse_term(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
     if (!parse_power(rt,t,p,ctx,out)) return 0;
-    while (t->items[*p].type == TOK_OPERATOR && (strcmp(t->items[*p].text,"*")==0 || strcmp(t->items[*p].text,"/")==0 || strcmp(t->items[*p].text,"%")==0)) {
-        char op = t->items[*p].text[0];
+    while (t->items[*p].type==TOK_OPERATOR &&
+           (strcmp(t->items[*p].text,"*")==0 || strcmp(t->items[*p].text,"/")==0 ||
+            strcmp(t->items[*p].text,"%")==0)) {
+        char op=t->items[*p].text[0];
         (*p)++;
         BriseValue right;
         if (!parse_power(rt,t,p,ctx,&right)) { free_value(out); return 0; }
-        double l,r;
-        if (!value_to_number(out,&l) || !value_to_number(&right,&r)) {
+        double left_number=0.0,right_number=0.0;
+        if (!value_to_number(out,&left_number) || !value_to_number(&right,&right_number)) {
             free_value(out); free_value(&right); set_error(rt,ctx,"Arithmetic expects numbers"); return 0;
         }
-        if ((op=='/' || op=='%') && r==0.0) { free_value(out); free_value(&right); set_error(rt,ctx,"Division by zero"); return 0; }
+        if ((op=='/' || op=='%') && right_number==0.0) {
+            free_value(out); free_value(&right); set_error(rt,ctx,"Division or remainder by zero"); return 0;
+        }
         free_value(out); free_value(&right);
-        if (op=='*') *out = value_number(l*r);
-        else if (op=='/') *out = value_number(l/r);
-        else { long long li=(long long)l; long long ri=(long long)r; *out = value_number((double)(li%ri)); }
+        double value=op=='*'?left_number*right_number:
+                     op=='/'?left_number/right_number:fmod(left_number,right_number);
+        if (!isfinite(value)) { set_error(rt,ctx,"Arithmetic result is not finite"); return 0; }
+        *out=value_number(value);
     }
     return 1;
 }
 
 static int parse_expression(BriseRuntime* rt, BriseTokenArray* t, size_t* p, BriseErrorContext ctx, BriseValue* out) {
     if (!parse_term(rt,t,p,ctx,out)) return 0;
-    while (t->items[*p].type == TOK_OPERATOR && (strcmp(t->items[*p].text,"+")==0 || strcmp(t->items[*p].text,"-")==0)) {
-        char op = t->items[*p].text[0];
+    while (t->items[*p].type==TOK_OPERATOR &&
+           (strcmp(t->items[*p].text,"+")==0 || strcmp(t->items[*p].text,"-")==0)) {
+        char op=t->items[*p].text[0];
         (*p)++;
         BriseValue right;
         if (!parse_term(rt,t,p,ctx,&right)) { free_value(out); return 0; }
-
         if (op=='+' && (out->type==BRISE_VAL_STRING || right.type==BRISE_VAL_STRING)) {
-            char* ls = value_to_string_heap(out);
-            char* rs = value_to_string_heap(&right);
-            size_t len = strlen(ls) + strlen(rs) + 1;
-            char* merged = (char*)malloc(len);
-            snprintf(merged, len, "%s%s", ls, rs);
-            free(ls); free(rs); free_value(out); free_value(&right);
-            *out = value_string(merged); free(merged);
+            char* left_text=value_to_string_heap(out);
+            char* right_text=value_to_string_heap(&right);
+            if (!left_text || !right_text) {
+                free(left_text); free(right_text); free_value(out); free_value(&right);
+                set_error(rt,ctx,"Out of memory"); return 0;
+            }
+            size_t left_len=strlen(left_text),right_len=strlen(right_text);
+            if (left_len>SIZE_MAX-right_len-1) {
+                free(left_text); free(right_text); free_value(out); free_value(&right);
+                set_error(rt,ctx,"String concatenation is too large"); return 0;
+            }
+            char* merged=(char*)malloc(left_len+right_len+1);
+            if (!merged) {
+                free(left_text); free(right_text); free_value(out); free_value(&right);
+                set_error(rt,ctx,"Out of memory"); return 0;
+            }
+            memcpy(merged,left_text,left_len);
+            memcpy(merged+left_len,right_text,right_len+1);
+            free(left_text); free(right_text); free_value(out); free_value(&right);
+            *out=value_string(merged); free(merged);
+            if (!out->string_value) { set_error(rt,ctx,"Out of memory"); return 0; }
             continue;
         }
-
-        double l,r;
-        if (!value_to_number(out,&l) || !value_to_number(&right,&r)) {
+        double left_number=0.0,right_number=0.0;
+        if (!value_to_number(out,&left_number) || !value_to_number(&right,&right_number)) {
             free_value(out); free_value(&right); set_error(rt,ctx,"Arithmetic expects numbers"); return 0;
         }
         free_value(out); free_value(&right);
-        *out = value_number(op=='+' ? l+r : l-r);
+        double value=op=='+'?left_number+right_number:left_number-right_number;
+        if (!isfinite(value)) { set_error(rt,ctx,"Arithmetic result is not finite"); return 0; }
+        *out=value_number(value);
     }
     return 1;
 }
@@ -851,10 +1000,23 @@ static int eval_condition(BriseRuntime* rt, BriseTokenArray* cond, BriseErrorCon
 static int append_text(char** dst, const char* text) {
     size_t old = *dst ? strlen(*dst) : 0;
     size_t add = strlen(text);
+    if (old>BRISE_MAX_NETWE_BYTES || add>BRISE_MAX_NETWE_BYTES-old) return 0;
     char* n = (char*)realloc(*dst, old + add + 1);
     if (!n) return 0;
     memcpy(n + old, text, add + 1);
     *dst = n;
+    return 1;
+}
+
+static int append_response_chunk(char** dst, size_t* length, const char* data, size_t amount) {
+    if (!dst || !length || (!data && amount) || *length>BRISE_MAX_NETWE_BYTES ||
+        amount>BRISE_MAX_NETWE_BYTES-*length) return 0;
+    char* next=(char*)realloc(*dst,*length+amount+1);
+    if (!next) return 0;
+    if (amount) memcpy(next+*length,data,amount);
+    *length+=amount;
+    next[*length]=' ';
+    *dst=next;
     return 1;
 }
 
@@ -1115,65 +1277,165 @@ static int execute_cmd_query(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     return 1;
 }
 
-static int execute_cmd_read(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
-    size_t lp = 2; const char* target = "read";
-    if (tokens->count>3 && tokens->items[2].type==TOK_IDENTIFIER && tokens->items[3].type==TOK_LPAREN) { target=tokens->items[2].text; lp=3; }
-    if (tokens->count<=lp || tokens->items[lp].type!=TOK_LPAREN) { set_error(rt,ctx,"read expects (...) path"); return 0; }
-    int ok=0; size_t rp=find_matching_rparen(rt,tokens,lp,ctx,&ok); if(!ok) return 0;
-    BriseTokenArray pexpr = token_slice(tokens,lp+1,rp);
-    size_t p=0; BriseValue pv;
-    if (!parse_expression(rt,&pexpr,&p,ctx,&pv)) { token_array_free(&pexpr); return 0; }
-    token_array_free(&pexpr);
-    char* rel = value_to_string_heap(&pv); free_value(&pv);
+static int resolve_script_local_path(BriseErrorContext ctx, const char* filename, char* path, size_t path_size) {
+    if (!ctx.file || !filename || !filename[0] || !path || !path_size ||
+        strcmp(filename,".")==0 || strcmp(filename,"..")==0) return 0;
+    for (const unsigned char* p=(const unsigned char*)filename;*p;++p)
+        if (*p=='/' || *p=='\\' || *p==':' || *p<32) return 0;
+    const char* slash=strrchr(ctx.file,'/');
+    const char* backslash=strrchr(ctx.file,'\\');
+    if (!slash || (backslash && backslash>slash)) slash=backslash;
+    size_t prefix=slash?(size_t)(slash-ctx.file+1):0;
+    size_t name_length=strlen(filename);
+    if (prefix>=path_size || name_length>=path_size-prefix) return 0;
+    if (prefix) memcpy(path,ctx.file,prefix);
+    memcpy(path+prefix,filename,name_length+1);
+    return 1;
+}
 
+static FILE* open_script_local_file(BriseErrorContext ctx, const char* filename, int writing) {
     char path[1024];
-    const char* slash = strrchr(ctx.file, '/'); if(!slash) slash = strrchr(ctx.file, '\\');
-    if (slash) { size_t k=(size_t)(slash-ctx.file+1); memcpy(path,ctx.file,k); path[k]=0; strncat(path,rel,sizeof(path)-strlen(path)-1);} else snprintf(path,sizeof(path),"%s",rel);
-    free(rel);
+    if (!resolve_script_local_path(ctx,filename,path,sizeof(path))) return NULL;
+#ifdef _WIN32
+    HANDLE handle=CreateFileA(path,writing?GENERIC_WRITE:GENERIC_READ,FILE_SHARE_READ,NULL,
+        writing?OPEN_ALWAYS:OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    if (handle==INVALID_HANDLE_VALUE) return NULL;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(handle,&info) ||
+        (info.dwFileAttributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY))) {
+        CloseHandle(handle); return NULL;
+    }
+    if (writing) {
+        LARGE_INTEGER zero; zero.QuadPart=0;
+        if (!SetFilePointerEx(handle,zero,NULL,FILE_BEGIN) || !SetEndOfFile(handle)) {
+            CloseHandle(handle); return NULL;
+        }
+    }
+    int fd=_open_osfhandle((intptr_t)handle,_O_BINARY|(writing?_O_WRONLY:_O_RDONLY));
+    if (fd<0) { CloseHandle(handle); return NULL; }
+    FILE* file=_fdopen(fd,writing?"wb":"rb");
+    if (!file) _close(fd);
+    return file;
+#else
+    int flags=writing?(O_WRONLY|O_CREAT|O_TRUNC):O_RDONLY;
+#ifdef O_NOFOLLOW
+    flags|=O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+    flags|=O_CLOEXEC;
+#endif
+    int fd=open(path,flags,0600);
+    if (fd<0) return NULL;
+    struct stat info;
+    if (fstat(fd,&info)!=0 || !S_ISREG(info.st_mode)) { close(fd); return NULL; }
+    FILE* file=fdopen(fd,writing?"wb":"rb");
+    if (!file) close(fd);
+    return file;
+#endif
+}
 
-    FILE* f = fopen(path,"rb");
-    if (!f) { set_error(rt,ctx,"read cannot open file"); return 0; }
-    fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
-    char* data=(char*)malloc((size_t)sz+1);
-    size_t rd = fread(data,1,(size_t)sz,f);
-    data[rd]=0;
-    fclose(f);
-    int rc = set_var(rt,target,value_string(data));
+static int execute_cmd_read(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
+    size_t lp=2;
+    const char* target="read";
+    if (tokens->count>3 && tokens->items[2].type==TOK_IDENTIFIER && tokens->items[3].type==TOK_LPAREN) {
+        target=tokens->items[2].text; lp=3;
+    }
+    if (tokens->count<=lp || tokens->items[lp].type!=TOK_LPAREN) {
+        set_error(rt,ctx,"read expects (...) path"); return 0;
+    }
+    int ok=0;
+    size_t rp=find_matching_rparen(rt,tokens,lp,ctx,&ok);
+    if (!ok) return 0;
+    BriseTokenArray expression=token_slice(tokens,lp+1,rp);
+    size_t cursor=0;
+    BriseValue path_value;
+    if (!parse_expression(rt,&expression,&cursor,ctx,&path_value)) { token_array_free(&expression); return 0; }
+    token_array_free(&expression);
+    char* filename=value_to_string_heap(&path_value);
+    free_value(&path_value);
+    if (!filename) { set_error(rt,ctx,"Out of memory"); return 0; }
+    FILE* file=open_script_local_file(ctx,filename,0);
+    free(filename);
+    if (!file) {
+        set_error(rt,ctx,"read accepts a regular filename in the script directory; paths and symlinks are not allowed");
+        return 0;
+    }
+    if (fseek(file,0,SEEK_END)!=0) {
+        fclose(file); set_error(rt,ctx,"read could not seek to the end of the file"); return 0;
+    }
+    long size=ftell(file);
+    if (size<0 || (unsigned long)size>BRISE_MAX_FILE_BYTES) {
+        fclose(file); set_error(rt,ctx,"read file is too large or its size could not be determined"); return 0;
+    }
+    if (fseek(file,0,SEEK_SET)!=0) {
+        fclose(file); set_error(rt,ctx,"read could not rewind the file"); return 0;
+    }
+    char* data=(char*)malloc((size_t)size+1);
+    if (!data) { fclose(file); set_error(rt,ctx,"Out of memory while reading file"); return 0; }
+    size_t count=fread(data,1,(size_t)size,file);
+    int io_error=ferror(file),close_error=fclose(file);
+    if (io_error || close_error!=0 || count!=(size_t)size) {
+        free(data); set_error(rt,ctx,"read failed before the complete file was loaded"); return 0;
+    }
+    data[count]='\0';
+    BriseValue result=value_string(data);
     free(data);
-    return rc;
+    if (!result.string_value || !set_var(rt,target,result)) {
+        free_value(&result); set_error(rt,ctx,"Out of memory while storing file contents"); return 0;
+    }
+    return 1;
 }
 
 static int execute_cmd_write(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
-    if (tokens->count<6 || tokens->items[2].type!=TOK_LPAREN) { set_error(rt,ctx,"write expects (path, value)"); return 0; }
-    int ok=0; size_t rp = find_matching_rparen(rt,tokens,2,ctx,&ok); if(!ok) return 0;
-    size_t comma = rp;
+    if (tokens->count<6 || tokens->items[2].type!=TOK_LPAREN) {
+        set_error(rt,ctx,"write expects (path, value)"); return 0;
+    }
+    int ok=0;
+    size_t rp=find_matching_rparen(rt,tokens,2,ctx,&ok);
+    if (!ok) return 0;
+    size_t comma=rp;
     int depth=0;
-    for (size_t i=3;i<rp;i++) {
+    for (size_t i=3;i<rp;++i) {
         if (tokens->items[i].type==TOK_LPAREN) depth++;
-        if (tokens->items[i].type==TOK_RPAREN) depth--;
-        if (depth==0 && tokens->items[i].type==TOK_COMMA) { comma=i; break; }
+        else if (tokens->items[i].type==TOK_RPAREN) depth--;
+        else if (depth==0 && tokens->items[i].type==TOK_COMMA) { comma=i; break; }
     }
     if (comma==rp) { set_error(rt,ctx,"write expects comma"); return 0; }
-
-    BriseTokenArray pexpr=token_slice(tokens,3,comma);
-    BriseTokenArray vexpr=token_slice(tokens,comma+1,rp);
-    size_t p1=0,p2=0; BriseValue pv,vv;
-    if (!parse_expression(rt,&pexpr,&p1,ctx,&pv)) { token_array_free(&pexpr); token_array_free(&vexpr); return 0; }
-    if (!parse_expression(rt,&vexpr,&p2,ctx,&vv)) { token_array_free(&pexpr); token_array_free(&vexpr); free_value(&pv); return 0; }
-    token_array_free(&pexpr); token_array_free(&vexpr);
-
-    char* rel = value_to_string_heap(&pv);
-    char* txt = value_to_string_heap(&vv);
-    free_value(&pv); free_value(&vv);
-
-    char path[1024];
-    const char* slash = strrchr(ctx.file, '/'); if(!slash) slash = strrchr(ctx.file, '\\');
-    if (slash) { size_t k=(size_t)(slash-ctx.file+1); memcpy(path,ctx.file,k); path[k]=0; strncat(path,rel,sizeof(path)-strlen(path)-1);} else snprintf(path,sizeof(path),"%s",rel);
-    free(rel);
-
-    FILE* f = fopen(path,"wb");
-    if (!f) { free(txt); set_error(rt,ctx,"write cannot open file"); return 0; }
-    fwrite(txt,1,strlen(txt),f); fclose(f); free(txt);
+    BriseTokenArray path_expression=token_slice(tokens,3,comma);
+    BriseTokenArray value_expression=token_slice(tokens,comma+1,rp);
+    size_t path_cursor=0,value_cursor=0;
+    BriseValue path_value,value;
+    memset(&path_value,0,sizeof(path_value)); memset(&value,0,sizeof(value));
+    if (!parse_expression(rt,&path_expression,&path_cursor,ctx,&path_value)) {
+        token_array_free(&path_expression); token_array_free(&value_expression); return 0;
+    }
+    if (!parse_expression(rt,&value_expression,&value_cursor,ctx,&value)) {
+        token_array_free(&path_expression); token_array_free(&value_expression); free_value(&path_value); return 0;
+    }
+    token_array_free(&path_expression); token_array_free(&value_expression);
+    char* filename=value_to_string_heap(&path_value);
+    char* text_value=value_to_string_heap(&value);
+    free_value(&path_value); free_value(&value);
+    if (!filename || !text_value) {
+        free(filename); free(text_value); set_error(rt,ctx,"Out of memory"); return 0;
+    }
+    size_t text_length=strlen(text_value);
+    if (text_length>BRISE_MAX_FILE_BYTES) {
+        free(filename); free(text_value); set_error(rt,ctx,"write data exceeds 4 MiB"); return 0;
+    }
+    FILE* file=open_script_local_file(ctx,filename,1);
+    free(filename);
+    if (!file) {
+        free(text_value);
+        set_error(rt,ctx,"write accepts a regular filename in the script directory; paths and symlinks are not allowed");
+        return 0;
+    }
+    size_t written=fwrite(text_value,1,text_length,file);
+    int close_error=fclose(file);
+    free(text_value);
+    if (written!=text_length || close_error!=0) {
+        set_error(rt,ctx,"write could not save the complete file"); return 0;
+    }
     return 1;
 }
 
@@ -1432,129 +1694,298 @@ static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     return render_ok;
 }
 
-static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
-    size_t lp = 2;
-    const char* target = "netwe";
-    if (tokens->count>3 && tokens->items[2].type==TOK_IDENTIFIER && tokens->items[3].type==TOK_LPAREN) { target=tokens->items[2].text; lp=3; }
-    if (tokens->count<=lp || tokens->items[lp].type!=TOK_LPAREN) { set_error(rt,ctx,"Netwe expects (...) url"); return 0; }
+static int parse_netwe_url(const char* url, int* secure, char* host, size_t host_size,
+                           char* host_header, size_t host_header_size, char* path, size_t path_size,
+                           char* port_text, size_t port_size) {
+    if (!url || !secure || !host || !host_header || !path || !port_text) return 0;
+    const char* authority=NULL;
+    int port=0;
+    if (strncmp(url,"https://",8)==0) { *secure=1; authority=url+8; port=443; }
+    else if (strncmp(url,"http://",7)==0) { *secure=0; authority=url+7; port=80; }
+    else return 0;
+    const char* authority_end=strpbrk(authority,"/?#");
+    if (!authority_end) authority_end=authority+strlen(authority);
+    size_t authority_length=(size_t)(authority_end-authority);
+    if (!authority_length || memchr(authority,'@',authority_length)) return 0;
+    const char* host_begin=authority;
+    const char* host_end=authority_end;
+    const char* port_begin=NULL;
+    int ipv6=0;
+    if (*authority=='[') {
+        const char* close=(const char*)memchr(authority,']',authority_length);
+        if (!close) return 0;
+        ipv6=1; host_begin=authority+1; host_end=close;
+        if (close+1<authority_end) { if (close[1]!=':') return 0; port_begin=close+2; }
+    } else {
+        const char* colon=(const char*)memchr(authority,':',authority_length);
+        if (colon) {
+            if (memchr(colon+1,':',(size_t)(authority_end-colon-1))) return 0;
+            host_end=colon; port_begin=colon+1;
+        }
+    }
+    size_t host_length=(size_t)(host_end-host_begin);
+    if (!host_length || host_length>=host_size) return 0;
+    memcpy(host,host_begin,host_length); host[host_length]='\0';
+    if (port_begin) {
+        if (port_begin>=authority_end) return 0;
+        char* end=NULL; long parsed=strtol(port_begin,&end,10);
+        if (end!=authority_end || parsed<1 || parsed>65535) return 0;
+        port=(int)parsed;
+    }
+    if (ipv6) {
+        if (port!=(*secure?443:80)) snprintf(host_header,host_header_size,"[%s]:%d",host,port);
+        else snprintf(host_header,host_header_size,"[%s]",host);
+    } else {
+        if (port!=(*secure?443:80)) snprintf(host_header,host_header_size,"%s:%d",host,port);
+        else snprintf(host_header,host_header_size,"%s",host);
+    }
+    const char* path_begin=authority_end;
+    if (*path_begin=='/') {
+        const char* fragment=strchr(path_begin,'#');
+        size_t n=fragment?(size_t)(fragment-path_begin):strlen(path_begin);
+        if (n>=path_size) return 0;
+        memcpy(path,path_begin,n); path[n]='\0';
+    } else if (*path_begin=='?') {
+        size_t n=strcspn(path_begin,"#");
+        if (n+1>=path_size) return 0;
+        path[0]='/'; memcpy(path+1,path_begin,n); path[n+1]='\0';
+    } else {
+        if (path_size<2) return 0;
+        strcpy(path,"/");
+    }
+    if (snprintf(port_text,port_size,"%d",port)<0) return 0;
+    return 1;
+}
 
-    int ok=0; size_t rp=find_matching_rparen(rt,tokens,lp,ctx,&ok); if(!ok) return 0;
-    BriseTokenArray expr = token_slice(tokens, lp+1, rp);
-    size_t p=0; BriseValue v;
-    if (!parse_expression(rt,&expr,&p,ctx,&v)) { token_array_free(&expr); return 0; }
-    token_array_free(&expr);
+#ifdef _WIN32
+static wchar_t* brise_utf8_to_wide(const char* input) {
+    if (!input) return NULL;
+    int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,input,-1,NULL,0);
+    if (count<=0) return NULL;
+    wchar_t* output=(wchar_t*)malloc((size_t)count*sizeof(wchar_t));
+    if (!output) return NULL;
+    if (!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,input,-1,output,count)) { free(output); return NULL; }
+    return output;
+}
+static int execute_netwe_winhttp(BriseRuntime* rt, const char* url, const char* target, BriseErrorContext ctx) {
+    wchar_t* wide_url=brise_utf8_to_wide(url);
+    if (!wide_url) { set_error(rt,ctx,"Netwe URL is not valid UTF-8"); return 0; }
+    URL_COMPONENTS parts;
+    memset(&parts,0,sizeof(parts));
+    parts.dwStructSize=sizeof(parts);
+    parts.dwSchemeLength=(DWORD)-1; parts.dwHostNameLength=(DWORD)-1;
+    parts.dwUrlPathLength=(DWORD)-1; parts.dwExtraInfoLength=(DWORD)-1;
+    if (!WinHttpCrackUrl(wide_url,0,0,&parts) ||
+        (parts.nScheme!=INTERNET_SCHEME_HTTP && parts.nScheme!=INTERNET_SCHEME_HTTPS)) {
+        free(wide_url); set_error(rt,ctx,"Netwe expects a valid http:// or https:// URL"); return 0;
+    }
+    wchar_t* host=(wchar_t*)malloc(((size_t)parts.dwHostNameLength+1)*sizeof(wchar_t));
+    size_t object_length=(size_t)parts.dwUrlPathLength+(size_t)parts.dwExtraInfoLength;
+    wchar_t* object=(wchar_t*)malloc((object_length+2)*sizeof(wchar_t));
+    if (!host || !object) { free(host); free(object); free(wide_url); set_error(rt,ctx,"Out of memory"); return 0; }
+    memcpy(host,parts.lpszHostName,(size_t)parts.dwHostNameLength*sizeof(wchar_t));
+    host[parts.dwHostNameLength]=L'\0';
+    size_t copied=0;
+    if (parts.dwUrlPathLength) { memcpy(object,parts.lpszUrlPath,(size_t)parts.dwUrlPathLength*sizeof(wchar_t)); copied+=(size_t)parts.dwUrlPathLength; }
+    if (parts.dwExtraInfoLength) { memcpy(object+copied,parts.lpszExtraInfo,(size_t)parts.dwExtraInfoLength*sizeof(wchar_t)); copied+=(size_t)parts.dwExtraInfoLength; }
+    if (!copied) object[copied++]=L'/';
+    object[copied]=L'\0';
 
-    char* url = value_to_string_heap(&v);
-    free_value(&v);
-
-    const char* rest = url;
-    if (strncmp(rest, "http://", 7) == 0) rest += 7;
-    else if (strncmp(rest, "https://", 8) == 0) {
-        free(url);
-        set_error(rt,ctx,"Netwe socket client currently supports http:// only");
+    DWORD status_code=0,status_size=sizeof(status_code);
+    HINTERNET session=WinHttpOpen(L"BriseNet/0.5",WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);
+    HINTERNET connection=NULL,request=NULL;
+    int ok=0;
+    char* body=NULL;
+    size_t body_length=0;
+    if (!session) goto winhttp_cleanup;
+    WinHttpSetTimeouts(session,5000,5000,10000,10000);
+    connection=WinHttpConnect(session,host,parts.nPort,0);
+    if (!connection) goto winhttp_cleanup;
+    request=WinHttpOpenRequest(connection,L"GET",object,NULL,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,
+        parts.nScheme==INTERNET_SCHEME_HTTPS?WINHTTP_FLAG_SECURE:0);
+    if (!request) goto winhttp_cleanup;
+    if (!WinHttpSendRequest(request,L"Accept-Encoding: identity\r\n",-1,WINHTTP_NO_REQUEST_DATA,0,0,0) ||
+        !WinHttpReceiveResponse(request,NULL)) goto winhttp_cleanup;
+    if (!WinHttpQueryHeaders(request,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_HEADER_NAME_BY_INDEX,&status_code,&status_size,WINHTTP_NO_HEADER_INDEX) ||
+        status_code<200 || status_code>=300) {
+        set_error(rt,ctx,"Netwe server returned a non-success HTTP status"); goto winhttp_cleanup;
+    }
+    for (;;) {
+        DWORD available=0;
+        if (!WinHttpQueryDataAvailable(request,&available)) goto winhttp_cleanup;
+        if (!available) { ok=1; break; }
+        while (available) {
+            char buffer[4096];
+            DWORD wanted=available<(DWORD)(sizeof(buffer)-1)?available:(DWORD)(sizeof(buffer)-1);
+            DWORD received=0;
+            if (!WinHttpReadData(request,buffer,wanted,&received) || !received) goto winhttp_cleanup;
+            if (!append_response_chunk(&body,&body_length,buffer,(size_t)received)) {
+                set_error(rt,ctx,"Netwe response exceeds 4 MiB or memory is unavailable"); goto winhttp_cleanup;
+            }
+            available-=received;
+        }
+    }
+winhttp_cleanup:
+    if (request) WinHttpCloseHandle(request);
+    if (connection) WinHttpCloseHandle(connection);
+    if (session) WinHttpCloseHandle(session);
+    free(host); free(object); free(wide_url);
+    if (!ok) {
+        free(body);
+        set_error(rt,ctx,"Netwe HTTP request failed (timeout, TLS validation, or connection error)");
         return 0;
     }
-
-    char host[256] = {0};
-    char path[1024] = "/";
-    int port = 80;
-
-    const char* slash = strchr(rest, '/');
-    const char* host_end = slash ? slash : rest + strlen(rest);
-    const char* colon = NULL;
-    for (const char* q = rest; q < host_end; ++q) if (*q == ':') { colon = q; break; }
-
-    if (colon) {
-        size_t hn = (size_t)(colon - rest);
-        if (hn >= sizeof(host)) hn = sizeof(host) - 1;
-        memcpy(host, rest, hn);
-        port = atoi(colon + 1);
-    } else {
-        size_t hn = (size_t)(host_end - rest);
-        if (hn >= sizeof(host)) hn = sizeof(host) - 1;
-        memcpy(host, rest, hn);
+    BriseValue result=value_string(body?body:"");
+    free(body);
+    if (!result.string_value || !set_var(rt,target,result)) {
+        free_value(&result); set_error(rt,ctx,"Out of memory while storing Netwe response"); return 0;
     }
-
-    if (slash) {
-        size_t pn = strlen(slash);
-        if (pn >= sizeof(path)) pn = sizeof(path) - 1;
-        memcpy(path, slash, pn);
-        path[pn] = '\0';
+    return 1;
+}
+#else
+static int brise_connect_with_timeout(BriseSocket sock, const struct sockaddr* address, socklen_t address_length) {
+    int old_flags=fcntl(sock,F_GETFL,0);
+    if (old_flags<0 || fcntl(sock,F_SETFL,old_flags|O_NONBLOCK)<0) return 0;
+    int rc=connect(sock,address,address_length);
+    if (rc<0 && errno!=EINPROGRESS && errno!=EWOULDBLOCK) { (void)fcntl(sock,F_SETFL,old_flags); return 0; }
+    if (rc<0) {
+        fd_set write_set; FD_ZERO(&write_set); FD_SET(sock,&write_set);
+        struct timeval timeout; timeout.tv_sec=5; timeout.tv_usec=0;
+        rc=select(sock+1,NULL,&write_set,NULL,&timeout);
+        if (rc<=0) { (void)fcntl(sock,F_SETFL,old_flags); return 0; }
+        int socket_error=0; socklen_t error_length=(socklen_t)sizeof(socket_error);
+        if (getsockopt(sock,SOL_SOCKET,SO_ERROR,&socket_error,&error_length)<0 || socket_error!=0) {
+            (void)fcntl(sock,F_SETFL,old_flags); return 0;
+        }
     }
-    free(url);
-
-    if (host[0] == '\0' || port <= 0) { set_error(rt,ctx,"Netwe invalid URL"); return 0; }
-
-#ifdef _WIN32
-    WSADATA wsa_data;
-    if (!brise_load_winsock()) { set_error(rt,ctx,"Netwe WinSock library load failed"); return 0; }
-    if (brise_wsa_startup(MAKEWORD(2, 2), &wsa_data) != 0) { set_error(rt,ctx,"Netwe WinSock startup failed"); return 0; }
-#endif
-
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    char port_text[16];
-    snprintf(port_text, sizeof(port_text), "%d", port);
-
-    struct addrinfo* res = NULL;
-    if (brise_getaddrinfo(host, port_text, &hints, &res) != 0) {
-#ifdef _WIN32
-        brise_wsa_cleanup();
-#endif
-        set_error(rt,ctx,"Netwe DNS resolve failed"); return 0;
+    if (fcntl(sock,F_SETFL,old_flags)<0) return 0;
+    return 1;
+}
+static int execute_netwe_posix(BriseRuntime* rt, const char* url, const char* target, BriseErrorContext ctx) {
+    int secure=0;
+    char host[256]={0},host_header[320]={0},path[2048]={0},port_text[16]={0};
+    if (!parse_netwe_url(url,&secure,host,sizeof(host),host_header,sizeof(host_header),path,sizeof(path),port_text,sizeof(port_text))) {
+        set_error(rt,ctx,"Netwe expects a valid http:// or https:// URL"); return 0;
     }
-
-    BriseSocket sock = BRISE_INVALID_SOCKET;
-    for (struct addrinfo* it = res; it; it = it->ai_next) {
-        sock = brise_socket(it->ai_family, it->ai_socktype, it->ai_protocol);
-        if (sock == BRISE_INVALID_SOCKET) continue;
-        if (brise_connect(sock, it->ai_addr, (int)it->ai_addrlen) == 0) break;
-        brise_close_socket(sock);
-        sock = BRISE_INVALID_SOCKET;
+    struct addrinfo hints; memset(&hints,0,sizeof(hints)); hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
+    struct addrinfo* addresses=NULL;
+    if (getaddrinfo(host,port_text,&hints,&addresses)!=0) { set_error(rt,ctx,"Netwe DNS resolution failed"); return 0; }
+    BriseSocket sock=BRISE_INVALID_SOCKET;
+    for (struct addrinfo* item=addresses;item;item=item->ai_next) {
+        sock=brise_socket(item->ai_family,item->ai_socktype,item->ai_protocol);
+        if (sock==BRISE_INVALID_SOCKET) continue;
+        if (brise_connect_with_timeout(sock,item->ai_addr,(socklen_t)item->ai_addrlen)) break;
+        brise_close_socket(sock); sock=BRISE_INVALID_SOCKET;
     }
-    brise_freeaddrinfo(res);
+    brise_freeaddrinfo(addresses);
+    if (sock==BRISE_INVALID_SOCKET) { set_error(rt,ctx,"Netwe connection failed or timed out"); return 0; }
+    struct timeval timeout; timeout.tv_sec=10; timeout.tv_usec=0;
+    (void)setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
+    (void)setsockopt(sock,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
 
-    if (sock == BRISE_INVALID_SOCKET) {
-#ifdef _WIN32
-        brise_wsa_cleanup();
-#endif
-        set_error(rt,ctx,"Netwe socket connect failed"); return 0;
+    SSL_CTX* ssl_context=NULL;
+    SSL* ssl=NULL;
+    if (secure) {
+        ssl_context=SSL_CTX_new(TLS_client_method());
+        if (!ssl_context) { brise_close_socket(sock); set_error(rt,ctx,"Netwe could not initialize TLS"); return 0; }
+        SSL_CTX_set_min_proto_version(ssl_context,TLS1_2_VERSION);
+        SSL_CTX_set_verify(ssl_context,SSL_VERIFY_PEER,NULL);
+        if (SSL_CTX_set_default_verify_paths(ssl_context)!=1) {
+            SSL_CTX_free(ssl_context); brise_close_socket(sock);
+            set_error(rt,ctx,"Netwe could not load trusted certificate authorities"); return 0;
+        }
+        ssl=SSL_new(ssl_context);
+        if (!ssl) { SSL_CTX_free(ssl_context); brise_close_socket(sock); set_error(rt,ctx,"Netwe could not create TLS session"); return 0; }
+        if (SSL_set_tlsext_host_name(ssl,host)!=1) {
+            SSL_free(ssl); SSL_CTX_free(ssl_context); brise_close_socket(sock);
+            set_error(rt,ctx,"Netwe could not set TLS server name"); return 0;
+        }
+        unsigned char ip_buffer[16];
+        int is_ip=inet_pton(AF_INET,host,ip_buffer)==1 || inet_pton(AF_INET6,host,ip_buffer)==1;
+        int name_ok=is_ip?X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl),host):SSL_set1_host(ssl,host);
+        if (name_ok!=1 || SSL_set_fd(ssl,sock)!=1 || SSL_connect(ssl)!=1 || SSL_get_verify_result(ssl)!=X509_V_OK) {
+            SSL_free(ssl); SSL_CTX_free(ssl_context); brise_close_socket(sock);
+            set_error(rt,ctx,"Netwe TLS handshake or certificate/hostname verification failed"); return 0;
+        }
     }
-
-    char req[2048];
-    snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: BriseNet/0.1\r\n\r\n", path, host);
-    BriseIoSize sent = (BriseIoSize)brise_send(sock, req, (int)strlen(req), 0);
-    if (sent < 0) { brise_close_socket(sock);
-#ifdef _WIN32
-        brise_wsa_cleanup();
-#endif
-        set_error(rt,ctx,"Netwe send failed"); return 0; }
-
-    char* response = xstrdup("");
-    char buf[1024];
-    while (1) {
-        BriseIoSize n = (BriseIoSize)brise_recv(sock, buf, (int)sizeof(buf)-1, 0);
-        if (n <= 0) break;
-        buf[n] = '\0';
-        if (!append_text(&response, buf)) { brise_close_socket(sock); free(response);
-#ifdef _WIN32
-            brise_wsa_cleanup();
-#endif
-            set_error(rt,ctx,"Out of memory"); return 0; }
+    char request[4096];
+    int request_length=snprintf(request,sizeof(request),
+        "GET %s HTTP/1.1\r\nHost: %s\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\nUser-Agent: BriseNet/0.5\r\n\r\n",
+        path,host_header);
+    if (request_length<0 || (size_t)request_length>=sizeof(request)) {
+        if (ssl) SSL_free(ssl);
+        if (ssl_context) SSL_CTX_free(ssl_context);
+        brise_close_socket(sock); set_error(rt,ctx,"Netwe request URL is too long"); return 0;
     }
+    size_t sent=0;
+    while (sent<(size_t)request_length) {
+        int n=secure?SSL_write(ssl,request+sent,(int)((size_t)request_length-sent)):
+                     (int)send(sock,request+sent,(size_t)request_length-sent,0);
+        if (n<=0) {
+            if (ssl) SSL_free(ssl);
+            if (ssl_context) SSL_CTX_free(ssl_context);
+            brise_close_socket(sock); set_error(rt,ctx,"Netwe request send failed or timed out"); return 0;
+        }
+        sent+=(size_t)n;
+    }
+    char* response=NULL; size_t response_length=0; int read_failed=0;
+    for (;;) {
+        char buffer[4096];
+        int n=secure?SSL_read(ssl,buffer,(int)sizeof(buffer)-1):(int)recv(sock,buffer,sizeof(buffer)-1,0);
+        if (n==0) break;
+        if (n<0) {
+            if (secure && SSL_get_error(ssl,n)==SSL_ERROR_ZERO_RETURN) break;
+            if (!secure && errno==EINTR) continue;
+            read_failed=1; break;
+        }
+        if (!append_response_chunk(&response,&response_length,buffer,(size_t)n)) { read_failed=1; break; }
+    }
+    if (ssl) { (void)SSL_shutdown(ssl); SSL_free(ssl); }
+    if (ssl_context) SSL_CTX_free(ssl_context);
     brise_close_socket(sock);
-#ifdef _WIN32
-    brise_wsa_cleanup();
+    if (read_failed || !response) {
+        free(response); set_error(rt,ctx,"Netwe response exceeded 4 MiB, timed out, or could not be read"); return 0;
+    }
+    int status=0;
+    if (sscanf(response,"HTTP/%*s %d",&status)!=1 || status<200 || status>=300) {
+        free(response); set_error(rt,ctx,"Netwe server returned an invalid or non-success HTTP status"); return 0;
+    }
+    char* body=strstr(response,"\r\n\r\n");
+    if (!body) { free(response); set_error(rt,ctx,"Netwe response did not contain an HTTP header terminator"); return 0; }
+    body+=4;
+    BriseValue result=value_string(body);
+    free(response);
+    if (!result.string_value || !set_var(rt,target,result)) {
+        free_value(&result); set_error(rt,ctx,"Out of memory while storing Netwe response"); return 0;
+    }
+    return 1;
+}
 #endif
 
-    char* body = strstr(response, "\r\n\r\n");
-    char* payload = body ? body + 4 : response;
-    int rc = set_var(rt, target, value_string(payload));
-    free(response);
-    return rc;
+static int execute_cmd_netwe(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
+    size_t lp=2;
+    const char* target="netwe";
+    if (tokens->count>3 && tokens->items[2].type==TOK_IDENTIFIER && tokens->items[3].type==TOK_LPAREN) {
+        target=tokens->items[2].text; lp=3;
+    }
+    if (tokens->count<=lp || tokens->items[lp].type!=TOK_LPAREN) { set_error(rt,ctx,"Netwe expects (...) url"); return 0; }
+    int ok=0; size_t rp=find_matching_rparen(rt,tokens,lp,ctx,&ok);
+    if (!ok) return 0;
+    BriseTokenArray expression=token_slice(tokens,lp+1,rp);
+    size_t cursor=0; BriseValue value;
+    if (!parse_expression(rt,&expression,&cursor,ctx,&value)) { token_array_free(&expression); return 0; }
+    token_array_free(&expression);
+    char* url=value_to_string_heap(&value);
+    free_value(&value);
+    if (!url) { set_error(rt,ctx,"Out of memory"); return 0; }
+#ifdef _WIN32
+    int result=execute_netwe_winhttp(rt,url,target,ctx);
+#else
+    int result=execute_netwe_posix(rt,url,target,ctx);
+#endif
+    free(url);
+    return result;
 }
 
 static int execute_tokens(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {

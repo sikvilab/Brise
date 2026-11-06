@@ -1,0 +1,17 @@
+// Brise math library showcase
+calc:radius = 3
+calc:circle_area = pi * pow(radius, 2)
+calc:angle = deg_to_rad(30)
+calc:wave = sin(angle)
+calc:distance = hypot(3, 4)
+calc:interpolated = lerp(10, 20, 0.25)
+calc:bounded = clamp(interpolated, 0, 12)
+calc:rounded = round_to(circle_area, 2)
+say:"Circle area: (rounded)"
+say:"sin(30 degrees): (wave)"
+say:"3-4-5 distance: (distance)"
+say:"Clamped interpolation: (bounded)"
+assert: factorial(5) == 120
+assert: gcd(54, 24) == 6
+assert: lcm(6, 8) == 24
+assert: is_prime(97)

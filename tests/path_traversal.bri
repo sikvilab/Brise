@@ -1,0 +1,2 @@
+read:outside("../README.md")
+say:outside
