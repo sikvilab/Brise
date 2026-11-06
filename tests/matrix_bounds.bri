@@ -1,0 +1,3 @@
+// Deliberately invalid: matrix indexes are zero-based and this matrix has one row.
+Matrix:create(bounds, 1, 1)
+Matrix:set(bounds, 1, 0, 7)
