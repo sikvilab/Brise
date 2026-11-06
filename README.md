@@ -135,8 +135,9 @@ Memory:alloc(weights, 4)
 Memory:set(weights, 0, 0.25)
 Memory:set(weights, 1, -0.5)
 calc:first_weight = mem_get("weights", 0)
+calc:weight_cells = mem_size("weights")
 say:"First weight: (first_weight)"
-say:"Cell count: (mem_size("weights"))"
+say:"Cell count: (weight_cells)"
 free:weights
 assert: not mem_exists("weights")
 ~~~
