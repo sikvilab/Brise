@@ -1,0 +1,26 @@
+// BriseNN example: a tiny OR classifier.
+Matrix:create(X, 4, 2)
+Matrix:set(X, 0, 0, 0)
+Matrix:set(X, 0, 1, 0)
+Matrix:set(X, 1, 0, 0)
+Matrix:set(X, 1, 1, 1)
+Matrix:set(X, 2, 0, 1)
+Matrix:set(X, 2, 1, 0)
+Matrix:set(X, 3, 0, 1)
+Matrix:set(X, 3, 1, 1)
+Matrix:create(Y, 4, 1)
+Matrix:set(Y, 0, 0, 0)
+Matrix:set(Y, 1, 0, 1)
+Matrix:set(Y, 2, 0, 1)
+Matrix:set(Y, 3, 0, 1)
+
+NN:create(classifier, 2)
+NN:layer(classifier, 4)
+NN:activation(classifier, "tanh")
+NN:layer(classifier, 1)
+NN:activation(classifier, "sigmoid")
+NN:train(classifier, X, Y, 3000, 0.5)
+NN:predict(classifier, X, predictions)
+say:"First row prediction: (mget(\"predictions\", 0, 0))"
+say:"Last row prediction: (mget(\"predictions\", 3, 0))"
+NN:save(classifier, "classifier.nn")
