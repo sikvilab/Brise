@@ -1,0 +1,34 @@
+// Brise v0.5.0 smoke tests
+set:name = "Brise"
+assert: len(name) == 5
+assert: upper("brise") == "BRISE"
+assert: lower("HELLO") == "hello"
+assert: trim("  ok  ") == "ok"
+assert: contains("language", "guage")
+assert: starts_with("Brise", "Bri")
+assert: ends_with("Brise", "ise")
+assert: type(42) == "number"
+assert: abs(-5) == 5
+assert: floor(3.9) == 3
+assert: ceil(3.1) == 4
+assert: round(3.5) == 4
+assert: sqrt(81) == 9
+assert: min(3, 8) == 3
+assert: max(3, 8) == 8
+assert: pow(2, 4) == 16
+assert: assert_eq("same", "same")
+assert: (2 < 3) and (3 < 4)
+assert: (2 > 3) or (3 == 3)
+assert: not (2 > 3)
+
+set:counter = 0
+while: counter < 4 (
+    calc:counter = counter + 1
+)
+assert: counter == 4
+
+set:score = 90
+if: score >= 80 and score <= 100 (set:result = "pass") else: (set:result = "fail")
+assert: result == "pass"
+
+say:"Brise smoke tests passed."
