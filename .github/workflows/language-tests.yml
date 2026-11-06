@@ -27,6 +27,10 @@ jobs:
           rm -f tests/brise_io.tmp
       - name: Run matrix and managed-memory tests
         run: ./brise tests/matrix_memory_smoke.bri
+      - name: Run BriseNN training and persistence tests
+        run: |
+          ./brise tests/brise_nn_smoke.bri
+          rm -f tests/brise_nn_model.nn
       - name: Reject invalid matrix and memory access
         run: |
           if ./brise tests/matrix_bounds.bri; then
@@ -103,6 +107,10 @@ jobs:
           Remove-Item -ErrorAction SilentlyContinue tests\brise_io.tmp
       - name: Run matrix and managed-memory tests
         run: .\brise.exe tests/matrix_memory_smoke.bri
+      - name: Run BriseNN training and persistence tests
+        run: |
+          .\brise.exe tests/brise_nn_smoke.bri
+          Remove-Item -ErrorAction SilentlyContinue tests\brise_nn_model.nn
       - name: Reject invalid matrix and memory access
         shell: pwsh
         run: |
