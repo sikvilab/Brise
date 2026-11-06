@@ -104,6 +104,21 @@ typedef ssize_t BriseIoSize;
 #define MAX_ERROR_LEN 512
 #define BRISE_MAX_FILE_BYTES (4u * 1024u * 1024u)
 #define BRISE_MAX_NETWE_BYTES (4u * 1024u * 1024u)
+/* Matrix and manual-memory allocations share a bounded pool of double cells. */
+#define BRISE_MAX_MANAGED_CELLS (1024u * 1024u)
+
+typedef struct {
+    char* name;
+    size_t rows;
+    size_t cols;
+    double* cells;
+} MatrixEntry;
+
+typedef struct {
+    char* name;
+    size_t count;
+    double* cells;
+} MemoryEntry;
 
 typedef struct {
     char* key;
@@ -205,6 +220,15 @@ struct BriseRuntime {
     size_t lists_count;
     size_t lists_capacity;
 
+    MatrixEntry* matrices;
+    size_t matrices_count;
+    size_t matrices_capacity;
+
+    MemoryEntry* memory;
+    size_t memory_count;
+    size_t memory_capacity;
+    size_t managed_cells;
+
     FileCacheEntry* cache;
     size_t cache_count;
     size_t cache_capacity;
@@ -215,6 +239,10 @@ struct BriseRuntime {
 
     char last_error[MAX_ERROR_LEN];
 };
+
+static MatrixEntry* find_matrix(BriseRuntime* rt, const char* name);
+static MemoryEntry* find_memory(BriseRuntime* rt, const char* name);
+static int matrix_det_value(BriseRuntime* rt, BriseErrorContext ctx, const MatrixEntry* matrix, double* result);
 
 static char* xstrdup(const char* s) {
     size_t n = strlen(s);
@@ -372,7 +400,7 @@ static int token_push(BriseTokenArray* arr, BriseTokenType type, const char* tex
 }
 
 static int is_keyword(const char* w) {
-    const char* k[] = {"say","set","calc","if","else","while","assert","and","or","not","Include","Call","List","Command","Graph","Netwe","random","solve","query","read","write","Say","to","everyone","true","false"};
+    const char* k[] = {"say","set","calc","if","else","while","assert","and","or","not","Include","Call","List","Command","Graph","Netwe","random","solve","query","read","write","Say","to","everyone","Matrix","Memory","free","true","false"};
     size_t n = sizeof(k)/sizeof(k[0]);
     for (size_t i=0;i<n;++i) if (brise_streq_ci(k[i], w)) return 1;
     return 0;
@@ -522,6 +550,52 @@ static int evaluate_builtin(BriseRuntime* rt, BriseErrorContext ctx, const char*
     double a=0.0,b=0.0,c=0.0,result=0.0;
     char* s=NULL;
     char* t=NULL;
+    if (brise_streq_ci(name,"mget") || brise_streq_ci(name,"matrix_get") ||
+        brise_streq_ci(name,"mem_get")) {
+        if (!builtin_arity(rt,ctx,name,3) || args[0].type!=BRISE_VAL_STRING ||
+            !value_to_number(&args[1],&a) || !value_to_number(&args[2],&b) ||
+            !isfinite(a) || !isfinite(b) || floor(a)!=a || floor(b)!=b || a<0 || b<0) {
+            set_error(rt,ctx,"mget/mem_get expects a string name and non-negative integer indexes");
+            return 0;
+        }
+        if (brise_streq_ci(name,"mem_get")) {
+            MemoryEntry* block=find_memory(rt,args[0].string_value);
+            if (!block) { set_error(rt,ctx,"Memory block does not exist or was freed"); return 0; }
+            if (a>=(double)block->count) { set_error(rt,ctx,"Memory cell index is out of range"); return 0; }
+            *out=value_number(block->cells[(size_t)a]); return 1;
+        }
+        MatrixEntry* matrix=find_matrix(rt,args[0].string_value);
+        if (!matrix) { set_error(rt,ctx,"Matrix does not exist"); return 0; }
+        if (a>=(double)matrix->rows || b>=(double)matrix->cols) {
+            set_error(rt,ctx,"Matrix index is out of range (indexes are zero-based)"); return 0;
+        }
+        *out=value_number(matrix->cells[(size_t)a*matrix->cols+(size_t)b]); return 1;
+    }
+    if (brise_streq_ci(name,"mrows") || brise_streq_ci(name,"mcols") ||
+        brise_streq_ci(name,"mdet") || brise_streq_ci(name,"mexists") ||
+        brise_streq_ci(name,"matrix_exists")) {
+        if (!builtin_arity(rt,ctx,name,1) || args[0].type!=BRISE_VAL_STRING) {
+            set_error(rt,ctx,"Matrix query expects one string matrix name"); return 0;
+        }
+        MatrixEntry* matrix=find_matrix(rt,args[0].string_value);
+        if (brise_streq_ci(name,"mexists") || brise_streq_ci(name,"matrix_exists")) {
+            *out=value_bool(matrix!=NULL); return 1;
+        }
+        if (!matrix) { set_error(rt,ctx,"Matrix does not exist"); return 0; }
+        if (brise_streq_ci(name,"mrows")) { *out=value_number((double)matrix->rows); return 1; }
+        if (brise_streq_ci(name,"mcols")) { *out=value_number((double)matrix->cols); return 1; }
+        if (!matrix_det_value(rt,ctx,matrix,&result)) return 0;
+        *out=value_number(result); return 1;
+    }
+    if (brise_streq_ci(name,"mem_size") || brise_streq_ci(name,"mem_exists")) {
+        if (!builtin_arity(rt,ctx,name,1) || args[0].type!=BRISE_VAL_STRING) {
+            set_error(rt,ctx,"Memory query expects one string block name"); return 0;
+        }
+        MemoryEntry* block=find_memory(rt,args[0].string_value);
+        if (brise_streq_ci(name,"mem_exists")) { *out=value_bool(block!=NULL); return 1; }
+        if (!block) { set_error(rt,ctx,"Memory block does not exist or was freed"); return 0; }
+        *out=value_number((double)block->count); return 1;
+    }
     if (brise_streq_ci(name,"len") || brise_streq_ci(name,"str") ||
         brise_streq_ci(name,"type") || brise_streq_ci(name,"upper") ||
         brise_streq_ci(name,"lower") || brise_streq_ci(name,"trim") ||
@@ -1069,6 +1143,458 @@ static int set_list(BriseRuntime* rt, const char* name, BriseTokenArray* items_t
     }
     return 1;
 }
+
+
+static MatrixEntry* find_matrix(BriseRuntime* rt, const char* name) {
+    for (size_t i=0;i<rt->matrices_count;i++)
+        if (strcmp(rt->matrices[i].name,name)==0) return &rt->matrices[i];
+    return NULL;
+}
+
+static MemoryEntry* find_memory(BriseRuntime* rt, const char* name) {
+    for (size_t i=0;i<rt->memory_count;i++)
+        if (strcmp(rt->memory[i].name,name)==0) return &rt->memory[i];
+    return NULL;
+}
+
+static int managed_cell_count_ok(BriseRuntime* rt, size_t old_count, size_t new_count) {
+    if (old_count>rt->managed_cells) return 0;
+    size_t current=rt->managed_cells-old_count;
+    return current<=BRISE_MAX_MANAGED_CELLS &&
+           new_count<=BRISE_MAX_MANAGED_CELLS-current;
+}
+
+static int store_matrix(BriseRuntime* rt, const char* name, size_t rows, size_t cols, double* cells) {
+    if (!name || !*name || !cells || !rows || !cols || rows>SIZE_MAX/cols) return 0;
+    size_t count=rows*cols;
+    MatrixEntry* m=find_matrix(rt,name);
+    size_t old_count=m?m->rows*m->cols:0;
+    if (!managed_cell_count_ok(rt,old_count,count)) return 0;
+    if (!m) {
+        if (!ensure_capacity((void**)&rt->matrices,&rt->matrices_capacity,sizeof(MatrixEntry),rt->matrices_count+1)) return 0;
+        m=&rt->matrices[rt->matrices_count];
+        memset(m,0,sizeof(*m));
+        m->name=xstrdup(name);
+        if (!m->name) return 0;
+        rt->matrices_count++;
+    } else {
+        free(m->cells);
+        rt->managed_cells-=old_count;
+    }
+    m->rows=rows; m->cols=cols; m->cells=cells;
+    rt->managed_cells+=count;
+    return 1;
+}
+
+static int store_memory(BriseRuntime* rt, const char* name, size_t count, double* cells) {
+    if (!name || !*name || !cells || !count) return 0;
+    MemoryEntry* m=find_memory(rt,name);
+    size_t old_count=m?m->count:0;
+    if (!managed_cell_count_ok(rt,old_count,count)) return 0;
+    if (!m) {
+        if (!ensure_capacity((void**)&rt->memory,&rt->memory_capacity,sizeof(MemoryEntry),rt->memory_count+1)) return 0;
+        m=&rt->memory[rt->memory_count];
+        memset(m,0,sizeof(*m));
+        m->name=xstrdup(name);
+        if (!m->name) return 0;
+        rt->memory_count++;
+    } else {
+        free(m->cells);
+        rt->managed_cells-=old_count;
+    }
+    m->count=count; m->cells=cells;
+    rt->managed_cells+=count;
+    return 1;
+}
+
+static int release_matrix(BriseRuntime* rt, const char* name) {
+    for (size_t i=0;i<rt->matrices_count;i++) {
+        MatrixEntry* m=&rt->matrices[i];
+        if (strcmp(m->name,name)!=0) continue;
+        size_t count=m->rows*m->cols;
+        if (count<=rt->managed_cells) rt->managed_cells-=count;
+        free(m->name); free(m->cells);
+        rt->matrices[i]=rt->matrices[rt->matrices_count-1];
+        rt->matrices_count--;
+        return 1;
+    }
+    return 0;
+}
+
+static int release_memory(BriseRuntime* rt, const char* name) {
+    for (size_t i=0;i<rt->memory_count;i++) {
+        MemoryEntry* m=&rt->memory[i];
+        if (strcmp(m->name,name)!=0) continue;
+        if (m->count<=rt->managed_cells) rt->managed_cells-=m->count;
+        free(m->name); free(m->cells);
+        rt->memory[i]=rt->memory[rt->memory_count-1];
+        rt->memory_count--;
+        return 1;
+    }
+    return 0;
+}
+
+static int read_object_name(BriseRuntime* rt, BriseTokenArray* t, size_t* p,
+                            size_t end, BriseErrorContext ctx, const char** name) {
+    if (*p>=end || (t->items[*p].type!=TOK_IDENTIFIER && t->items[*p].type!=TOK_STRING)) {
+        set_error(rt,ctx,"Expected an allocated matrix or memory-block name");
+        return 0;
+    }
+    *name=t->items[*p].text;
+    (*p)++;
+    return 1;
+}
+
+static int expect_arg_comma(BriseRuntime* rt, BriseTokenArray* t, size_t* p,
+                            size_t end, BriseErrorContext ctx) {
+    if (*p>=end || t->items[*p].type!=TOK_COMMA) {
+        set_error(rt,ctx,"Expected ',' between command arguments");
+        return 0;
+    }
+    (*p)++;
+    return 1;
+}
+
+static int read_numeric_arg(BriseRuntime* rt, BriseTokenArray* t, size_t* p,
+                            size_t end, BriseErrorContext ctx, double* out) {
+    if (*p>=end) { set_error(rt,ctx,"Missing numeric command argument"); return 0; }
+    BriseValue value;
+    if (!parse_expression(rt,t,p,ctx,&value)) return 0;
+    int ok=value_to_number(&value,out) && isfinite(*out);
+    free_value(&value);
+    if (!ok) set_error(rt,ctx,"Expected a finite numeric argument");
+    return ok;
+}
+
+static int positive_cell_count(BriseRuntime* rt, BriseErrorContext ctx, double n, size_t* out) {
+    if (!isfinite(n) || n<1.0 || floor(n)!=n || n>(double)BRISE_MAX_MANAGED_CELLS) {
+        set_error(rt,ctx,"Dimensions and cell counts must be positive whole numbers within the memory limit");
+        return 0;
+    }
+    *out=(size_t)n;
+    return 1;
+}
+
+static int matrix_det_value(BriseRuntime* rt, BriseErrorContext ctx, const MatrixEntry* m, double* result) {
+    if (!m || m->rows!=m->cols) {
+        set_error(rt,ctx,"Determinant requires a square matrix");
+        return 0;
+    }
+    size_t n=m->rows, count=n*n;
+    double* work=(double*)malloc(count*sizeof(double));
+    if (!work) { set_error(rt,ctx,"Out of memory calculating determinant"); return 0; }
+    memcpy(work,m->cells,count*sizeof(double));
+    double det=1.0;
+    int sign=1;
+    for (size_t col=0;col<n;col++) {
+        size_t pivot=col;
+        for (size_t row=col+1;row<n;row++)
+            if (fabs(work[row*n+col])>fabs(work[pivot*n+col])) pivot=row;
+        if (fabs(work[pivot*n+col])<=1e-14) { det=0.0; break; }
+        if (pivot!=col) {
+            for (size_t j=0;j<n;j++) {
+                double tmp=work[col*n+j]; work[col*n+j]=work[pivot*n+j]; work[pivot*n+j]=tmp;
+            }
+            sign=-sign;
+        }
+        double diagonal=work[col*n+col];
+        det*=diagonal;
+        for (size_t row=col+1;row<n;row++) {
+            double factor=work[row*n+col]/diagonal;
+            for (size_t j=col+1;j<n;j++) work[row*n+j]-=factor*work[col*n+j];
+        }
+    }
+    free(work);
+    det*=(double)sign;
+    if (!isfinite(det)) { set_error(rt,ctx,"Determinant is outside the finite numeric range"); return 0; }
+    *result=det;
+    return 1;
+}
+
+static double* matrix_inverse_values(BriseRuntime* rt, BriseErrorContext ctx, const MatrixEntry* m) {
+    if (!m || m->rows!=m->cols) {
+        set_error(rt,ctx,"Inverse requires a square matrix");
+        return NULL;
+    }
+    size_t n=m->rows, count=n*n;
+    if (count>BRISE_MAX_MANAGED_CELLS/2) {
+        set_error(rt,ctx,"Matrix is too large for the inverse operation");
+        return NULL;
+    }
+    double* work=(double*)malloc(count*sizeof(double));
+    double* inverse=(double*)calloc(count,sizeof(double));
+    if (!work || !inverse) {
+        free(work); free(inverse);
+        set_error(rt,ctx,"Out of memory calculating matrix inverse");
+        return NULL;
+    }
+    memcpy(work,m->cells,count*sizeof(double));
+    for (size_t i=0;i<n;i++) inverse[i*n+i]=1.0;
+    for (size_t col=0;col<n;col++) {
+        size_t pivot=col;
+        for (size_t row=col+1;row<n;row++)
+            if (fabs(work[row*n+col])>fabs(work[pivot*n+col])) pivot=row;
+        if (fabs(work[pivot*n+col])<=1e-14) {
+            free(work); free(inverse);
+            set_error(rt,ctx,"Cannot invert a singular matrix");
+            return NULL;
+        }
+        if (pivot!=col) for (size_t j=0;j<n;j++) {
+            double tmp=work[col*n+j]; work[col*n+j]=work[pivot*n+j]; work[pivot*n+j]=tmp;
+            tmp=inverse[col*n+j]; inverse[col*n+j]=inverse[pivot*n+j]; inverse[pivot*n+j]=tmp;
+        }
+        double divisor=work[col*n+col];
+        for (size_t j=0;j<n;j++) { work[col*n+j]/=divisor; inverse[col*n+j]/=divisor; }
+        for (size_t row=0;row<n;row++) {
+            if (row==col) continue;
+            double factor=work[row*n+col];
+            for (size_t j=0;j<n;j++) {
+                work[row*n+j]-=factor*work[col*n+j];
+                inverse[row*n+j]-=factor*inverse[col*n+j];
+            }
+        }
+    }
+    free(work);
+    for (size_t i=0;i<count;i++) if (!isfinite(inverse[i])) {
+        free(inverse); set_error(rt,ctx,"Matrix inverse produced a non-finite value"); return NULL;
+    }
+    return inverse;
+}
+
+static int execute_cmd_matrix(BriseRuntime* rt, BriseTokenArray* t, BriseErrorContext ctx) {
+    if (t->count<5 || t->items[2].type!=TOK_IDENTIFIER || t->items[3].type!=TOK_LPAREN) {
+        set_error(rt,ctx,"Use Matrix:create, Matrix:set, Matrix:identity, or an advanced Matrix operation");
+        return 0;
+    }
+    const char* method=t->items[2].text;
+    int ok=0;
+    size_t end=find_matching_rparen(rt,t,3,ctx,&ok);
+    if (!ok) return 0;
+    size_t p=4, rows=0, cols=0, count=0;
+    const char *name=NULL, *second=NULL, *dest=NULL;
+    double a=0.0,b=0.0,c=0.0;
+    double* values=NULL;
+    MatrixEntry *left=NULL, *right=NULL;
+
+    if (brise_streq_ci(method,"create") || brise_streq_ci(method,"basic")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&a) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&b) || p!=end ||
+            !positive_cell_count(rt,ctx,a,&rows) || !positive_cell_count(rt,ctx,b,&cols) ||
+            rows>BRISE_MAX_MANAGED_CELLS/cols) {
+            if (!rt->last_error[0]) set_error(rt,ctx,"Invalid Matrix:create dimensions");
+            return 0;
+        }
+        count=rows*cols;
+        values=(double*)calloc(count,sizeof(double));
+        if (!values || !store_matrix(rt,name,rows,cols,values)) {
+            free(values); set_error(rt,ctx,"Matrix allocation failed or managed memory limit exceeded"); return 0;
+        }
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"identity")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&a) || p!=end ||
+            !positive_cell_count(rt,ctx,a,&rows) || rows>BRISE_MAX_MANAGED_CELLS/rows) return 0;
+        values=(double*)calloc(rows*rows,sizeof(double));
+        if (!values) { set_error(rt,ctx,"Out of memory creating identity matrix"); return 0; }
+        for (size_t i=0;i<rows;i++) values[i*rows+i]=1.0;
+        if (!store_matrix(rt,name,rows,rows,values)) {
+            free(values); set_error(rt,ctx,"Matrix allocation failed or managed memory limit exceeded"); return 0;
+        }
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"set")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&a) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&b) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&c) || p!=end) return 0;
+        left=find_matrix(rt,name);
+        if (!left) { set_error(rt,ctx,"Matrix does not exist"); return 0; }
+        if (a<0 || b<0 || floor(a)!=a || floor(b)!=b ||
+            a>=(double)left->rows || b>=(double)left->cols) {
+            set_error(rt,ctx,"Matrix index is out of range (indexes are zero-based)"); return 0;
+        }
+        left->cells[(size_t)a*left->cols+(size_t)b]=c;
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"fill")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&a) || p!=end) return 0;
+        left=find_matrix(rt,name);
+        if (!left) { set_error(rt,ctx,"Matrix does not exist"); return 0; }
+        for (size_t i=0;i<left->rows*left->cols;i++) left->cells[i]=a;
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"print")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || p!=end) return 0;
+        left=find_matrix(rt,name);
+        if (!left) { set_error(rt,ctx,"Matrix does not exist"); return 0; }
+        for (size_t r=0;r<left->rows;r++) {
+            for (size_t col=0;col<left->cols;col++)
+                printf("%s%.10g",col?" ":"",left->cells[r*left->cols+col]);
+            putchar('\n');
+        }
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"det") || brise_streq_ci(method,"determinant")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            p+1!=end || t->items[p].type!=TOK_IDENTIFIER) {
+            set_error(rt,ctx,"Syntax: Matrix:det(matrix, result_variable)"); return 0;
+        }
+        left=find_matrix(rt,name);
+        if (!left) { set_error(rt,ctx,"Matrix does not exist"); return 0; }
+        if (!matrix_det_value(rt,ctx,left,&a)) return 0;
+        if (!set_var(rt,t->items[p].text,value_number(a))) {
+            set_error(rt,ctx,"Could not store determinant result"); return 0;
+        }
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"copy") || brise_streq_ci(method,"transpose") ||
+        brise_streq_ci(method,"trans") || brise_streq_ci(method,"inverse") ||
+        brise_streq_ci(method,"inv") || brise_streq_ci(method,"scale") ||
+        brise_streq_ci(method,"add") || brise_streq_ci(method,"sub") ||
+        brise_streq_ci(method,"subtract") || brise_streq_ci(method,"mul") ||
+        brise_streq_ci(method,"multiply")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&dest) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_object_name(rt,t,&p,end,ctx,&name)) return 0;
+        left=find_matrix(rt,name);
+        if (!left) { set_error(rt,ctx,"Source matrix does not exist"); return 0; }
+
+        if (brise_streq_ci(method,"copy")) {
+            if (p!=end) { set_error(rt,ctx,"Matrix:copy expects two names"); return 0; }
+            rows=left->rows; cols=left->cols; count=rows*cols;
+            values=(double*)malloc(count*sizeof(double));
+            if (values) memcpy(values,left->cells,count*sizeof(double));
+        } else if (brise_streq_ci(method,"transpose") || brise_streq_ci(method,"trans")) {
+            if (p!=end) { set_error(rt,ctx,"Matrix:transpose expects two names"); return 0; }
+            rows=left->cols; cols=left->rows; count=rows*cols;
+            values=(double*)malloc(count*sizeof(double));
+            if (values) for (size_t r=0;r<left->rows;r++) for (size_t col=0;col<left->cols;col++)
+                values[col*cols+r]=left->cells[r*left->cols+col];
+        } else if (brise_streq_ci(method,"inverse") || brise_streq_ci(method,"inv")) {
+            if (p!=end) { set_error(rt,ctx,"Matrix:inverse expects two names"); return 0; }
+            values=matrix_inverse_values(rt,ctx,left);
+            if (!values) return 0;
+            rows=left->rows; cols=left->cols; count=rows*cols;
+        } else if (brise_streq_ci(method,"scale")) {
+            if (!expect_arg_comma(rt,t,&p,end,ctx) || !read_numeric_arg(rt,t,&p,end,ctx,&a) || p!=end) return 0;
+            rows=left->rows; cols=left->cols; count=rows*cols;
+            values=(double*)malloc(count*sizeof(double));
+            if (values) for (size_t i=0;i<count;i++) values[i]=left->cells[i]*a;
+        } else {
+            if (!expect_arg_comma(rt,t,&p,end,ctx) || !read_object_name(rt,t,&p,end,ctx,&second) || p!=end) {
+                if (!rt->last_error[0]) set_error(rt,ctx,"Expected a second source matrix name");
+                return 0;
+            }
+            right=find_matrix(rt,second);
+            if (!right) { set_error(rt,ctx,"Second source matrix does not exist"); return 0; }
+            if (brise_streq_ci(method,"add") || brise_streq_ci(method,"sub") || brise_streq_ci(method,"subtract")) {
+                if (left->rows!=right->rows || left->cols!=right->cols) {
+                    set_error(rt,ctx,"Matrix addition/subtraction requires equal dimensions"); return 0;
+                }
+                rows=left->rows; cols=left->cols; count=rows*cols;
+                values=(double*)malloc(count*sizeof(double));
+                if (values) for (size_t i=0;i<count;i++)
+                    values[i]=left->cells[i]+(brise_streq_ci(method,"add")?right->cells[i]:-right->cells[i]);
+            } else {
+                if (left->cols!=right->rows) {
+                    set_error(rt,ctx,"Matrix multiplication requires left columns to equal right rows"); return 0;
+                }
+                rows=left->rows; cols=right->cols; count=rows*cols;
+                values=(double*)calloc(count,sizeof(double));
+                if (values) for (size_t r=0;r<rows;r++) for (size_t k=0;k<left->cols;k++)
+                    for (size_t col=0;col<cols;col++)
+                        values[r*cols+col]+=left->cells[r*left->cols+k]*right->cells[k*cols+col];
+            }
+        }
+        if (!values) { set_error(rt,ctx,"Out of memory creating matrix result"); return 0; }
+        for (size_t i=0;i<count;i++) if (!isfinite(values[i])) {
+            free(values); set_error(rt,ctx,"Matrix operation produced a non-finite value"); return 0;
+        }
+        if (!store_matrix(rt,dest,rows,cols,values)) {
+            free(values); set_error(rt,ctx,"Matrix result exceeds the managed memory limit"); return 0;
+        }
+        return 1;
+    }
+
+    set_error(rt,ctx,"Unknown Matrix operation");
+    return 0;
+}
+
+static int execute_cmd_memory(BriseRuntime* rt, BriseTokenArray* t, BriseErrorContext ctx) {
+    if (t->count<5 || t->items[2].type!=TOK_IDENTIFIER || t->items[3].type!=TOK_LPAREN) {
+        set_error(rt,ctx,"Use Memory:alloc(name, cells), Memory:set(name, index, value), or Memory:fill");
+        return 0;
+    }
+    const char* method=t->items[2].text;
+    int ok=0;
+    size_t end=find_matching_rparen(rt,t,3,ctx,&ok);
+    if (!ok) return 0;
+    size_t p=4, count=0;
+    const char* name=NULL;
+    double a=0.0,b=0.0;
+    double* cells=NULL;
+
+    if (brise_streq_ci(method,"alloc") || brise_streq_ci(method,"create")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&a) || p!=end ||
+            !positive_cell_count(rt,ctx,a,&count)) return 0;
+        cells=(double*)calloc(count,sizeof(double));
+        if (!cells || !store_memory(rt,name,count,cells)) {
+            free(cells); set_error(rt,ctx,"Memory allocation failed or managed memory limit exceeded"); return 0;
+        }
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"set")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&a) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&b) || p!=end) return 0;
+        MemoryEntry* block=find_memory(rt,name);
+        if (!block) { set_error(rt,ctx,"Memory block does not exist or was freed"); return 0; }
+        if (a<0 || floor(a)!=a || a>=(double)block->count) {
+            set_error(rt,ctx,"Memory cell index is out of range (indexes are zero-based)"); return 0;
+        }
+        block->cells[(size_t)a]=b;
+        return 1;
+    }
+
+    if (brise_streq_ci(method,"fill")) {
+        if (!read_object_name(rt,t,&p,end,ctx,&name) || !expect_arg_comma(rt,t,&p,end,ctx) ||
+            !read_numeric_arg(rt,t,&p,end,ctx,&a) || p!=end) return 0;
+        MemoryEntry* block=find_memory(rt,name);
+        if (!block) { set_error(rt,ctx,"Memory block does not exist or was freed"); return 0; }
+        for (size_t i=0;i<block->count;i++) block->cells[i]=a;
+        return 1;
+    }
+
+    set_error(rt,ctx,"Unknown Memory operation");
+    return 0;
+}
+
+static int execute_cmd_free(BriseRuntime* rt, BriseTokenArray* t, BriseErrorContext ctx) {
+    if (t->count<4 || (t->items[2].type!=TOK_IDENTIFIER && t->items[2].type!=TOK_STRING) ||
+        t->items[3].type!=TOK_END) {
+        set_error(rt,ctx,"Use free:name to release a matrix or memory block");
+        return 0;
+    }
+    const char* name=t->items[2].text;
+    int matrix_released=release_matrix(rt,name);
+    int memory_released=release_memory(rt,name);
+    if (!matrix_released && !memory_released) {
+        set_error(rt,ctx,"No allocated matrix or memory block has that name");
+        return 0;
+    }
+    return 1;
+}
+
 
 static int execute_cmd_say(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
     BriseTokenArray expr = token_slice(tokens,2,tokens->count-1);
@@ -2015,6 +2541,9 @@ static int execute_tokens(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
         if (brise_streq_ci(cmd,"write")) return execute_cmd_write(rt,tokens,ctx);
         if (brise_streq_ci(cmd,"Graph")) return execute_cmd_graph(rt,tokens,ctx);
         if (brise_streq_ci(cmd,"Netwe")) return execute_cmd_netwe(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"Matrix")) return execute_cmd_matrix(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"Memory")) return execute_cmd_memory(rt,tokens,ctx);
+        if (brise_streq_ci(cmd,"free")) return execute_cmd_free(rt,tokens,ctx);
         set_error(rt,ctx,"Unknown command keyword"); return 0;
     }
 
@@ -2051,6 +2580,16 @@ void brise_runtime_destroy(BriseRuntime* rt) {
         free(rt->lists[i].items);
     }
     free(rt->lists);
+    for (size_t i=0;i<rt->matrices_count;i++) {
+        free(rt->matrices[i].name);
+        free(rt->matrices[i].cells);
+    }
+    free(rt->matrices);
+    for (size_t i=0;i<rt->memory_count;i++) {
+        free(rt->memory[i].name);
+        free(rt->memory[i].cells);
+    }
+    free(rt->memory);
     for (size_t i=0;i<rt->cache_count;i++) {
         free(rt->cache[i].path);
         for (size_t j=0;j<rt->cache[i].count;j++) token_array_free(&rt->cache[i].lines[j].tokens);
