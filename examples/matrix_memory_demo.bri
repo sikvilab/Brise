@@ -1,0 +1,27 @@
+// Brise matrices: basic and advanced operations
+Matrix:create(inputs, 2, 2)
+Matrix:set(inputs, 0, 0, 1)
+Matrix:set(inputs, 0, 1, 2)
+Matrix:set(inputs, 1, 0, 3)
+Matrix:set(inputs, 1, 1, 4)
+
+Matrix:identity(identity, 2)
+Matrix:multiply(projected, inputs, identity)
+Matrix:transpose(transposed, inputs)
+Matrix:det(inputs, det_value)
+Matrix:inverse(inverted, inputs)
+
+say:"Input matrix:"
+Matrix:print(inputs)
+say:"Determinant: (det_value)"
+say:"Inverse:"
+Matrix:print(inverted)
+
+Memory:alloc(neuron_weights, 4)
+Memory:set(neuron_weights, 0, 0.25)
+Memory:set(neuron_weights, 1, -0.5)
+Memory:set(neuron_weights, 2, 0.75)
+Memory:set(neuron_weights, 3, 0.1)
+calc:weight_sum = mem_get("neuron_weights", 0) + mem_get("neuron_weights", 1) + mem_get("neuron_weights", 2) + mem_get("neuron_weights", 3)
+say:"Example neural-network weight sum: (weight_sum)"
+free:neuron_weights
