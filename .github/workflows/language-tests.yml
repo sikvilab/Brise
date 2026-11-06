@@ -27,6 +27,20 @@ jobs:
           rm -f tests/brise_io.tmp
       - name: Run matrix and managed-memory tests
         run: ./brise tests/matrix_memory_smoke.bri
+      - name: Reject invalid matrix and memory access
+        run: |
+          if ./brise tests/matrix_bounds.bri; then
+            echo "Out-of-range matrix access unexpectedly succeeded"
+            exit 1
+          fi
+          if ./brise tests/managed_memory_limit.bri; then
+            echo "Managed memory limit was not enforced"
+            exit 1
+          fi
+          if ./brise tests/memory_after_free.bri; then
+            echo "Use-after-free unexpectedly succeeded"
+            exit 1
+          fi
       - name: Reject file path traversal
         run: |
           if ./brise tests/path_traversal.bri; then
@@ -89,6 +103,14 @@ jobs:
           Remove-Item -ErrorAction SilentlyContinue tests\brise_io.tmp
       - name: Run matrix and managed-memory tests
         run: .\brise.exe tests/matrix_memory_smoke.bri
+      - name: Reject invalid matrix and memory access
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path .\brise.exe).Path
+          foreach ($script in @("tests/matrix_bounds.bri", "tests/managed_memory_limit.bri", "tests/memory_after_free.bri")) {
+            $result = Start-Process -FilePath $exe -ArgumentList @($script) -Wait -PassThru -NoNewWindow
+            if ($result.ExitCode -eq 0) { throw "$script unexpectedly succeeded" }
+          }
       - name: Reject file path traversal
         shell: pwsh
         run: |
