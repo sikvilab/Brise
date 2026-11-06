@@ -1,0 +1,4 @@
+// Deliberately invalid: access after free must be rejected.
+Memory:alloc(released, 2)
+free:released
+calc:value_after_free = mem_get("released", 0)
