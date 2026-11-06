@@ -1,0 +1,30 @@
+name: Brise cross-platform tests
+
+on:
+  push:
+    branches: [ "main", "t", "codex/**" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build interpreter
+        run: g++ -std=c++17 main.cpp brise_runtime.c -I. -lm -o brise
+      - name: Run smoke tests
+        run: ./brise tests/smoke.bri
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW
+        run: |
+          choco install mingw -y
+          echo "C:\\ProgramData\\chocolatey\\lib\\mingw\\tools\\install\\mingw64\\bin" >> $env:GITHUB_PATH
+      - name: Build interpreter
+        run: g++ -std=c++17 main.cpp brise_runtime.c -I. -o brise.exe -static -static-libgcc -static-libstdc++
+      - name: Run smoke tests
+        run: .\\brise.exe tests/smoke.bri
