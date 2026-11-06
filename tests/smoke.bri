@@ -22,9 +22,7 @@ assert: (2 > 3) or (3 == 3)
 assert: not (2 > 3)
 
 set:counter = 0
-while: counter < 4 (
-    calc:counter = counter + 1
-)
+while: counter < 4 (calc:counter = counter + 1)
 assert: counter == 4
 
 set:score = 90
