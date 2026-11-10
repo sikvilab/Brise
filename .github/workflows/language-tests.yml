@@ -15,8 +15,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev
-      - name: Build interpreter
-        run: g++ -std=c++17 -Wall -Wextra main.cpp brise_runtime.c -I. -lssl -lcrypto -ldl -lm -o brise
+      - name: Compile runtime as C11
+        run: gcc -D_POSIX_C_SOURCE=200809L -std=c11 -Wall -Wextra -I. -c brise_runtime.c -o brise_runtime.o
+      - name: Link interpreter
+        run: g++ -std=c++17 -Wall -Wextra main.cpp brise_runtime.o -I. -lssl -lcrypto -ldl -lm -o brise
       - name: Build BTC
         run: gcc -std=c11 -Wall -Wextra -pedantic btc.c -o btc
       - name: Run interpreter smoke tests
@@ -43,8 +45,17 @@ jobs:
           fi
       - name: Reject file path traversal
         run: |
-          if ./brise tests/path_traversal.bri; then
-            echo "Path traversal unexpectedly succeeded"
+          for script in tests/path_traversal.bri tests/include_traversal.bri tests/call_traversal.bri; do
+            if ./brise "$script"; then
+              echo "$script unexpectedly succeeded"
+              exit 1
+            fi
+          done
+      - name: Test random integer boundaries
+        run: |
+          ./brise tests/random_bounds.bri
+          if ./brise tests/random_invalid.bri; then
+            echo "Out-of-range random bounds unexpectedly succeeded"
             exit 1
           fi
       - name: Run BTC transpiler smoke test
@@ -52,6 +63,14 @@ jobs:
           ./btc tests/btc_smoke.bri --no-build
           gcc -std=c11 tests/btc_smoke.c -o tests/btc_smoke
           test "$(./tests/btc_smoke)" = "13"
+      - name: Run local HTTP chunked integration test
+        run: |
+          set -eu
+          python3 tests/http_chunked_server.py > /tmp/brise-chunked-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          sleep 1
+          ./brise tests/http_chunked_smoke.bri
       - name: Run local HTTPS integration test
         run: |
           set -eu
@@ -91,8 +110,10 @@ jobs:
         run: |
           choco install mingw -y
           echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $env:GITHUB_PATH
-      - name: Build interpreter
-        run: g++ -std=c++17 -Wall -Wextra main.cpp brise_runtime.c -I. -lwinhttp -o brise.exe -static -static-libgcc -static-libstdc++
+      - name: Compile runtime as C11
+        run: gcc -std=c11 -Wall -Wextra -I. -c brise_runtime.c -o brise_runtime.o
+      - name: Link interpreter
+        run: g++ -std=c++17 -Wall -Wextra main.cpp brise_runtime.o -I. -lwinhttp -o brise.exe -static -static-libgcc -static-libstdc++
       - name: Build BTC
         run: gcc -std=c11 -Wall -Wextra -pedantic btc.c -o btc.exe
       - name: Run interpreter smoke tests
@@ -115,8 +136,16 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Resolve-Path .\brise.exe).Path
-          $result = Start-Process -FilePath $exe -ArgumentList @("tests/path_traversal.bri") -Wait -PassThru -NoNewWindow
-          if ($result.ExitCode -eq 0) { throw "Path traversal unexpectedly succeeded" }
+          foreach ($script in @("tests/path_traversal.bri", "tests/include_traversal.bri", "tests/call_traversal.bri")) {
+            $result = Start-Process -FilePath $exe -ArgumentList @($script) -Wait -PassThru -NoNewWindow
+            if ($result.ExitCode -eq 0) { throw "$script unexpectedly succeeded" }
+          }
+      - name: Test random integer boundaries
+        shell: pwsh
+        run: |
+          .\brise.exe tests/random_bounds.bri
+          $result = Start-Process -FilePath (Resolve-Path .\brise.exe).Path -ArgumentList @("tests/random_invalid.bri") -Wait -PassThru -NoNewWindow
+          if ($result.ExitCode -eq 0) { throw "Out-of-range random bounds unexpectedly succeeded" }
       - name: Run BTC transpiler smoke test
         run: |
           .\btc.exe tests/btc_smoke.bri --no-build
