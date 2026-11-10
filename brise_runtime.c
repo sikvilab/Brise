@@ -106,6 +106,7 @@ typedef ssize_t BriseIoSize;
 #define BRISE_MAX_NETWE_BYTES (4u * 1024u * 1024u)
 /* Matrix and manual-memory allocations share a bounded pool of double cells. */
 #define BRISE_MAX_MANAGED_CELLS (1024u * 1024u)
+#define BRISE_NN_MAX_TRAINING_OPERATIONS (50000000u)
 
 typedef struct {
     char* name;
@@ -1475,13 +1476,14 @@ static int execute_cmd_nn(BriseRuntime* rt,BriseTokenArray* t,BriseErrorContext 
             if(fscanf(f,"%zu %15s",&outputs,act_name)!=2||!outputs||outputs>BRISE_MAX_MANAGED_CELLS/prev){valid=0;break;}
             int act=nn_activation_id(act_name);if(act<0){valid=0;break;}
             size_t params=outputs*prev+outputs;if(params>BRISE_NN_MAX_PARAMETERS-total){valid=0;break;}total+=params;
-            BriseNNLayer* layer=&temp.layers[temp.layer_count];memset(layer,0,sizeof(*layer));
+            BriseNNLayer* layer=&temp.layers[temp.layer_count++];
+            memset(layer,0,sizeof(*layer));
             layer->input_count=prev;layer->output_count=outputs;layer->activation=act;
             layer->weights=(double*)malloc(outputs*prev*sizeof(double));layer->biases=(double*)malloc(outputs*sizeof(double));
             if(!layer->weights||!layer->biases){valid=0;break;}
             for(size_t o=0;o<outputs&&valid;o++)if(fscanf(f,"%lf",&layer->biases[o])!=1||!isfinite(layer->biases[o]))valid=0;
             for(size_t w=0;w<outputs*prev&&valid;w++)if(fscanf(f,"%lf",&layer->weights[w])!=1||!isfinite(layer->weights[w]))valid=0;
-            if(valid){temp.layer_count++;prev=outputs;}
+            if(valid)prev=outputs;
         }
         fclose(f);
         if(!valid||temp.layer_count!=layers){free_neural_network(&temp);set_error(rt,ctx,"Corrupt or unsupported BriseNN model file");return 0;}
@@ -1557,11 +1559,29 @@ static int execute_cmd_nn(BriseRuntime* rt,BriseTokenArray* t,BriseErrorContext 
         size_t outputs=net->layers[net->layer_count-1].output_count;
         if(!x||!y||x->rows!=y->rows||x->cols!=net->input_count||y->cols!=outputs||!x->rows){
             set_error(rt,ctx,"Training matrices must have equal row counts and matching input/output widths");return 0;}
-        size_t L=net->layer_count;double** acts=(double**)calloc(L+1,sizeof(double*));double** zs=(double**)calloc(L,sizeof(double*));double** deltas=(double**)calloc(L,sizeof(double*));
-        if(!acts||!zs||!deltas){free(acts);free(zs);free(deltas);set_error(rt,ctx,"Out of memory allocating training workspace");return 0;}
+        size_t parameter_count=0;
+        for(size_t l=0;l<net->layer_count;l++)
+            parameter_count+=net->layers[l].input_count*net->layers[l].output_count+net->layers[l].output_count;
+        if(x->rows>BRISE_NN_MAX_TRAINING_OPERATIONS/epochs ||
+           parameter_count>BRISE_NN_MAX_TRAINING_OPERATIONS/(epochs*x->rows)) {
+            set_error(rt,ctx,"Training workload exceeds the 50000000 parameter-operation limit");
+            return 0;
+        }
+        size_t L=net->layer_count;
+        double* parameter_backup=(double*)malloc(parameter_count*sizeof(double));
+        if(!parameter_backup){set_error(rt,ctx,"Out of memory backing up neural-network parameters");return 0;}
+        size_t backup_offset=0;
+        for(size_t l=0;l<L;l++){
+            BriseNNLayer* layer=&net->layers[l];
+            size_t bias_count=layer->output_count,weight_count=layer->input_count*layer->output_count;
+            memcpy(parameter_backup+backup_offset,layer->biases,bias_count*sizeof(double));backup_offset+=bias_count;
+            memcpy(parameter_backup+backup_offset,layer->weights,weight_count*sizeof(double));backup_offset+=weight_count;
+        }
+        double** acts=(double**)calloc(L+1,sizeof(double*));double** zs=(double**)calloc(L,sizeof(double*));double** deltas=(double**)calloc(L,sizeof(double*));
+        if(!acts||!zs||!deltas){free(parameter_backup);free(acts);free(zs);free(deltas);set_error(rt,ctx,"Out of memory allocating training workspace");return 0;}
         acts[0]=(double*)malloc(net->input_count*sizeof(double));int ok=acts[0]!=NULL;
         for(size_t l=0;l<L&&ok;l++){BriseNNLayer* layer=&net->layers[l];acts[l+1]=(double*)malloc(layer->output_count*sizeof(double));zs[l]=(double*)malloc(layer->output_count*sizeof(double));deltas[l]=(double*)malloc(layer->output_count*sizeof(double));if(!acts[l+1]||!zs[l]||!deltas[l])ok=0;}
-        if(!ok){for(size_t l=0;l<=L;l++)free(acts[l]);for(size_t l=0;l<L;l++){free(zs[l]);free(deltas[l]);}free(acts);free(zs);free(deltas);set_error(rt,ctx,"Out of memory allocating training workspace");return 0;}
+        if(!ok){for(size_t l=0;l<=L;l++)free(acts[l]);for(size_t l=0;l<L;l++){free(zs[l]);free(deltas[l]);}free(acts);free(zs);free(deltas);free(parameter_backup);set_error(rt,ctx,"Out of memory allocating training workspace");return 0;}
         for(size_t epoch=0;epoch<epochs&&ok;epoch++)for(size_t sample=0;sample<x->rows&&ok;sample++){
             memcpy(acts[0],x->cells+sample*x->cols,net->input_count*sizeof(double));
             for(size_t l=0;l<L;l++){BriseNNLayer* layer=&net->layers[l];for(size_t o=0;o<layer->output_count;o++){
@@ -1573,11 +1593,33 @@ static int execute_cmd_nn(BriseRuntime* rt,BriseTokenArray* t,BriseErrorContext 
             for(size_t rev=L-1;rev>0;rev--){BriseNNLayer* cur=&net->layers[rev-1];BriseNNLayer* next=&net->layers[rev];
                 for(size_t i=0;i<cur->output_count;i++){double sum=0.0;for(size_t o=0;o<next->output_count;o++)sum+=next->weights[o*next->input_count+i]*deltas[rev][o];
                     deltas[rev-1][i]=sum*nn_derivative(zs[rev-1][i],acts[rev][i],cur->activation);}}
-            for(size_t l=0;l<L;l++){BriseNNLayer* layer=&net->layers[l];for(size_t o=0;o<layer->output_count;o++){
-                layer->biases[o]-=b*deltas[l][o];for(size_t i=0;i<layer->input_count;i++)layer->weights[o*layer->input_count+i]-=b*deltas[l][o]*acts[l][i];}}
+            for(size_t l=0;l<L&&ok;l++){BriseNNLayer* layer=&net->layers[l];for(size_t o=0;o<layer->output_count&&ok;o++){
+                double new_bias=layer->biases[o]-b*deltas[l][o];
+                if(!isfinite(new_bias)){ok=0;break;}
+                layer->biases[o]=new_bias;
+                for(size_t i=0;i<layer->input_count;i++){
+                    size_t index=o*layer->input_count+i;
+                    double new_weight=layer->weights[index]-b*deltas[l][o]*acts[l][i];
+                    if(!isfinite(new_weight)){ok=0;break;}
+                    layer->weights[index]=new_weight;
+                }
+            }}
         }
         for(size_t l=0;l<=L;l++)free(acts[l]);for(size_t l=0;l<L;l++){free(zs[l]);free(deltas[l]);}free(acts);free(zs);free(deltas);
-        if(!ok){set_error(rt,ctx,"Training stopped because a non-finite value was encountered");return 0;}return 1;
+        if(!ok){
+            backup_offset=0;
+            for(size_t l=0;l<L;l++){
+                BriseNNLayer* layer=&net->layers[l];
+                size_t bias_count=layer->output_count,weight_count=layer->input_count*layer->output_count;
+                memcpy(layer->biases,parameter_backup+backup_offset,bias_count*sizeof(double));backup_offset+=bias_count;
+                memcpy(layer->weights,parameter_backup+backup_offset,weight_count*sizeof(double));backup_offset+=weight_count;
+            }
+            free(parameter_backup);
+            set_error(rt,ctx,"Training stopped; non-finite values were detected and the model was restored");
+            return 0;
+        }
+        free(parameter_backup);
+        return 1;
     }
     set_error(rt,ctx,"Unknown NN operation");return 0;
 }
