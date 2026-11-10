@@ -1,0 +1,9 @@
+Matrix:create(train_x, 1, 1)
+Matrix:create(train_y, 1, 1000)
+NN:create(large_model, 1)
+NN:layer(large_model, 1000)
+NN:activation(large_model, "linear")
+NN:layer(large_model, 1000)
+NN:activation(large_model, "linear")
+NN:train(large_model, train_x, train_y, 100, 0.1)
+say:"Training workload limit was not enforced."

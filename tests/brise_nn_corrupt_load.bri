@@ -1,0 +1,2 @@
+NN:load(broken_model, "brise_nn_corrupt.nn")
+say:"Corrupt model unexpectedly loaded."

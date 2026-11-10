@@ -144,6 +144,51 @@ assert: not mem_exists("weights")
 
 The matrix and manual-memory API is available in the interpreter. BTC remains a preview compiler for its documented subset and does not yet transpile these commands.
 
+
+### BriseNN — neural networks
+
+BriseNN is an experimental, native multilayer-perceptron library. It uses dense layers, Xavier weight initialization, sigmoid/tanh/ReLU/linear activations, forward propagation, and online stochastic-gradient backpropagation. Training and prediction data are supplied as Brise matrices (one sample per row). Models can be saved and loaded as versioned text files in the script directory.
+
+~~~brise
+Matrix:create(X, 4, 2)
+Matrix:set(X, 0, 0, 0)
+Matrix:set(X, 0, 1, 0)
+Matrix:set(X, 1, 0, 0)
+Matrix:set(X, 1, 1, 1)
+Matrix:set(X, 2, 0, 1)
+Matrix:set(X, 2, 1, 0)
+Matrix:set(X, 3, 0, 1)
+Matrix:set(X, 3, 1, 1)
+Matrix:create(Y, 4, 1)
+Matrix:set(Y, 0, 0, 0)
+Matrix:set(Y, 1, 0, 1)
+Matrix:set(Y, 2, 0, 1)
+Matrix:set(Y, 3, 0, 1)
+
+NN:create(classifier, 2)
+NN:layer(classifier, 4)
+NN:activation(classifier, "tanh")
+NN:layer(classifier, 1)
+NN:activation(classifier, "sigmoid")
+NN:train(classifier, X, Y, 3000, 0.5)
+NN:predict(classifier, X, P)
+say:"First prediction: (mget(\"P\", 0, 0))"
+NN:save(classifier, "classifier.nn")
+NN:load(restored, "classifier.nn")
+~~~
+
+API:
+
+- NN:create(name, input_size) creates a model.
+- NN:layer(name, neuron_count) appends a dense layer (default activation: tanh).
+- NN:activation(name, "relu|tanh|sigmoid|linear") configures the most recently added layer.
+- NN:forward(name, input_matrix, output_matrix) performs inference; NN:predict is an alias.
+- NN:train(name, input_matrix, target_matrix, epochs, learning_rate) trains with online SGD/backpropagation and mean-squared-error gradients.
+- NN:save(name, "file.nn") and NN:load(name, "file.nn") persist/restore model parameters.
+
+Input and target matrices must have the same number of rows; their column counts must match the network input and output widths. Matrix indexes are zero-based. The model file is a versioned text format, not a portable executable. Model parameters are limited to 1,048,576 per network. Each training call is capped at 50,000,000 parameter operations; if a non-finite update occurs, the previous model parameters are restored. Training is currently single-threaded and does not shuffle samples.
+
+
 ### Networking
 
 ~~~brise

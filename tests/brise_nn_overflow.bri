@@ -1,0 +1,9 @@
+Matrix:create(train_x, 1, 1)
+Matrix:set(train_x, 0, 0, 0)
+Matrix:create(train_y, 1, 1)
+Matrix:set(train_y, 0, 0, 1e308)
+NN:create(overflow_model, 1)
+NN:layer(overflow_model, 1)
+NN:activation(overflow_model, "linear")
+NN:train(overflow_model, train_x, train_y, 1, 10)
+say:"Non-finite model update unexpectedly succeeded."

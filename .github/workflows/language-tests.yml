@@ -27,6 +27,16 @@ jobs:
           rm -f tests/brise_io.tmp
       - name: Run matrix and managed-memory tests
         run: ./brise tests/matrix_memory_smoke.bri
+      - name: Run BriseNN training and persistence tests
+        run: |
+          ./brise tests/brise_nn_smoke.bri
+          rm -f tests/brise_nn_model.nn
+          for script in tests/brise_nn_corrupt_load.bri tests/brise_nn_training_limit.bri tests/brise_nn_overflow.bri; do
+            if ./brise "$script"; then
+              echo "$script unexpectedly succeeded"
+              exit 1
+            fi
+          done
       - name: Reject invalid matrix and memory access
         run: |
           if ./brise tests/matrix_bounds.bri; then
@@ -69,7 +79,7 @@ jobs:
       - name: Package Linux binaries
         run: |
           mkdir -p dist
-          cp brise btc README.md LICENSE examples/math_showcase.bri examples/matrix_memory_demo.bri dist/
+          cp brise btc README.md LICENSE examples/math_showcase.bri examples/matrix_memory_demo.bri examples/neural_network_or.bri dist/
           printf '%s\n' "$GITHUB_SHA" > dist/BUILD_COMMIT
           tar -czf brise-linux-x86_64.tar.gz -C dist .
           sha256sum brise-linux-x86_64.tar.gz > brise-linux-x86_64.tar.gz.sha256
@@ -103,6 +113,16 @@ jobs:
           Remove-Item -ErrorAction SilentlyContinue tests\brise_io.tmp
       - name: Run matrix and managed-memory tests
         run: .\brise.exe tests/matrix_memory_smoke.bri
+      - name: Run BriseNN training and persistence tests
+        shell: pwsh
+        run: |
+          .\brise.exe tests/brise_nn_smoke.bri
+          Remove-Item -ErrorAction SilentlyContinue tests\brise_nn_model.nn
+          $exe = (Resolve-Path .\brise.exe).Path
+          foreach ($script in @("tests/brise_nn_corrupt_load.bri", "tests/brise_nn_training_limit.bri", "tests/brise_nn_overflow.bri")) {
+            $result = Start-Process -FilePath $exe -ArgumentList @($script) -Wait -PassThru -NoNewWindow
+            if ($result.ExitCode -eq 0) { throw "$script unexpectedly succeeded" }
+          }
       - name: Reject invalid matrix and memory access
         shell: pwsh
         run: |
@@ -127,7 +147,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item brise.exe,btc.exe,README.md,LICENSE,examples/math_showcase.bri,examples/matrix_memory_demo.bri dist/
+          Copy-Item brise.exe,btc.exe,README.md,LICENSE,examples/math_showcase.bri,examples/matrix_memory_demo.bri,examples/neural_network_or.bri dist/
           Set-Content -NoNewline -Path dist/BUILD_COMMIT -Value $env:GITHUB_SHA
           Compress-Archive -Path dist\* -DestinationPath brise-windows-x86_64.zip -Force
           $hash = (Get-FileHash brise-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()

@@ -1,0 +1,32 @@
+// BriseNN smoke test: learn the OR function, then round-trip the model.
+Matrix:create(train_x, 4, 2)
+Matrix:set(train_x, 0, 0, 0)
+Matrix:set(train_x, 0, 1, 0)
+Matrix:set(train_x, 1, 0, 0)
+Matrix:set(train_x, 1, 1, 1)
+Matrix:set(train_x, 2, 0, 1)
+Matrix:set(train_x, 2, 1, 0)
+Matrix:set(train_x, 3, 0, 1)
+Matrix:set(train_x, 3, 1, 1)
+Matrix:create(train_y, 4, 1)
+Matrix:set(train_y, 0, 0, 0)
+Matrix:set(train_y, 1, 0, 1)
+Matrix:set(train_y, 2, 0, 1)
+Matrix:set(train_y, 3, 0, 1)
+NN:create(or_model, 2)
+NN:layer(or_model, 4)
+NN:activation(or_model, "tanh")
+NN:layer(or_model, 1)
+NN:activation(or_model, "sigmoid")
+NN:train(or_model, train_x, train_y, 3000, 0.5)
+NN:predict(or_model, train_x, predictions)
+assert: mget("predictions", 0, 0) < 0.2
+assert: mget("predictions", 1, 0) > 0.8
+assert: mget("predictions", 2, 0) > 0.8
+assert: mget("predictions", 3, 0) > 0.8
+NN:save(or_model, "brise_nn_model.nn")
+NN:load(restored_model, "brise_nn_model.nn")
+NN:forward(restored_model, train_x, restored_predictions)
+assert: abs(mget("restored_predictions", 0, 0) - mget("predictions", 0, 0)) < 1e-12
+assert: abs(mget("restored_predictions", 3, 0) - mget("predictions", 3, 0)) < 1e-12
+say:"BriseNN smoke tests passed."
