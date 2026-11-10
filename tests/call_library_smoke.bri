@@ -1,0 +1,3 @@
+Call: "audit_test"
+assert: audit_call_loaded == 1
+say:"Call library test passed."
