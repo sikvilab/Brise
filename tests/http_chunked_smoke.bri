@@ -1,0 +1,3 @@
+Netwe: response("http://127.0.0.1:18444/chunked")
+assert: response == "brise-chunked"
+say:"HTTP chunked test passed."

@@ -1673,19 +1673,25 @@ static int execute_cmd_if(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
     return 1;
 }
 
+static int resolve_script_local_path(BriseErrorContext ctx, const char* filename, char* path, size_t path_size);
+static FILE* open_script_local_file(BriseErrorContext ctx, const char* filename, int writing);
+static int brise_execute_file_stream(BriseRuntime* rt, const char* filename, FILE* stream);
+
 static int execute_cmd_include(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
-    if (tokens->count < 4 || tokens->items[2].type != TOK_STRING) { set_error(rt,ctx,"Include expects string file"); return 0; }
-    char path[1024];
-    const char* slash = strrchr(ctx.file, '/');
-    if (!slash) slash = strrchr(ctx.file, '\\');
-    if (slash) {
-        size_t n = (size_t)(slash - ctx.file + 1);
-        memcpy(path, ctx.file, n); path[n]=0;
-        strncat(path, tokens->items[2].text, sizeof(path)-strlen(path)-1);
-    } else {
-        snprintf(path,sizeof(path),"%s",tokens->items[2].text);
+    if (tokens->count < 4 || tokens->items[2].type != TOK_STRING) {
+        set_error(rt,ctx,"Include expects string file"); return 0;
     }
-    return brise_execute_file(rt,path);
+    char path[1024];
+    if (!resolve_script_local_path(ctx,tokens->items[2].text,path,sizeof(path))) {
+        set_error(rt,ctx,"Include accepts a regular filename in the script directory; paths are not allowed");
+        return 0;
+    }
+    FILE* included=open_script_local_file(ctx,tokens->items[2].text,0);
+    if (!included) {
+        set_error(rt,ctx,"Include requires a regular, non-symlink file in the script directory");
+        return 0;
+    }
+    return brise_execute_file_stream(rt,path,included);
 }
 
 static int execute_cmd_list(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
@@ -1769,9 +1775,15 @@ static int execute_cmd_random(BriseRuntime* rt, BriseTokenArray* tokens, BriseEr
     double mn,mx;
     if (!value_to_number(&minv,&mn) || !value_to_number(&maxv,&mx)) { free_value(&minv); free_value(&maxv); set_error(rt,ctx,"random expects numeric range"); return 0; }
     free_value(&minv); free_value(&maxv);
-    if (mn > mx) { set_error(rt,ctx,"random min > max"); return 0; }
-    int r = (int)mn + (rand() % ((int)mx - (int)mn + 1));
-    return set_var(rt,"random",value_number((double)r));
+    if (!isfinite(mn) || !isfinite(mx) || mn > mx || mn < (double)INT_MIN || mn > (double)INT_MAX ||
+        mx < (double)INT_MIN || mx > (double)INT_MAX) {
+        set_error(rt,ctx,"random expects an ordered range within the int limits"); return 0;
+    }
+    int64_t low=(int64_t)mn, high=(int64_t)mx;
+    uint64_t range=(uint64_t)(high-low)+UINT64_C(1);
+    uint64_t bits=((uint64_t)(unsigned int)rand()<<32) ^ (uint64_t)(unsigned int)rand();
+    int64_t chosen=low+(int64_t)(bits%range);
+    return set_var(rt,"random",value_number((double)chosen));
 }
 
 static int execute_cmd_solve(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
@@ -1969,16 +1981,75 @@ static int execute_cmd_write(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     return 1;
 }
 
+static FILE* open_call_library_file(const char* lib, const char* path) {
+    size_t n=strlen(lib);
+    if (!n || n>64) return NULL;
+    for (size_t i=0;i<n;i++) {
+        unsigned char c=(unsigned char)lib[i];
+        if (!(isalnum(c) || c=='_' || c=='-')) return NULL;
+    }
+#ifdef _WIN32
+    HANDLE dir=CreateFileA("libs",FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    if (dir==INVALID_HANDLE_VALUE) return NULL;
+    BY_HANDLE_FILE_INFORMATION di;
+    int dir_ok=GetFileInformationByHandle(dir,&di) &&
+        (di.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) && !(di.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT);
+    CloseHandle(dir);
+    if (!dir_ok) return NULL;
+    HANDLE file=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    if (file==INVALID_HANDLE_VALUE) return NULL;
+    BY_HANDLE_FILE_INFORMATION fi;
+    int file_ok=GetFileInformationByHandle(file,&fi) &&
+        !(fi.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT));
+    if (!file_ok) { CloseHandle(file); return NULL; }
+    int fd=_open_osfhandle((intptr_t)file,_O_BINARY|_O_RDONLY);
+    if (fd<0) { CloseHandle(file); return NULL; }
+    FILE* stream=_fdopen(fd,"rb");
+    if (!stream) _close(fd);
+    return stream;
+#else
+    int dirfd=open("libs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW
+#ifdef O_CLOEXEC
+        |O_CLOEXEC
+#endif
+    );
+    if (dirfd<0) return NULL;
+    char library_filename[80];
+    int filename_length=snprintf(library_filename,sizeof(library_filename),"%s.bri",lib);
+    if (filename_length<0 || (size_t)filename_length>=sizeof(library_filename)) {
+        close(dirfd); return NULL;
+    }
+    int fd=openat(dirfd,library_filename,O_RDONLY|O_NOFOLLOW
+#ifdef O_CLOEXEC
+        |O_CLOEXEC
+#endif
+    );
+    close(dirfd);
+    if (fd<0) return NULL;
+    struct stat info;
+    if (fstat(fd,&info)!=0 || !S_ISREG(info.st_mode)) { close(fd); return NULL; }
+    FILE* stream=fdopen(fd,"rb");
+    if (!stream) close(fd);
+    return stream;
+#endif
+}
+
 static int execute_cmd_call(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
     if (tokens->count < 2 || tokens->items[1].type != TOK_STRING) { set_error(rt,ctx,"Call expects string library name"); return 0; }
     const char* lib = tokens->items[1].text;
-    if (strcmp(lib, "Graph") == 0) {
-        rt->graph_enabled = 1;
-        return 1;
-    }
+    if (strcmp(lib, "Graph") == 0) { rt->graph_enabled = 1; return 1; }
     char path[1024];
-    snprintf(path, sizeof(path), "libs/%s.bri", lib);
-    return brise_execute_file(rt, path);
+    int written=snprintf(path,sizeof(path),"libs/%s.bri",lib);
+    if (written<0 || (size_t)written>=sizeof(path)) {
+        set_error(rt,ctx,"Call library path is too long"); return 0;
+    }
+    FILE* library=open_call_library_file(lib,path);
+    if (!library) {
+        set_error(rt,ctx,"Call accepts a safe library name and a regular, non-symlink file in libs/");
+        return 0;
+    }
+    return brise_execute_file_stream(rt,path,library);
 }
 
 static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
@@ -2392,6 +2463,81 @@ static int brise_connect_with_timeout(BriseSocket sock, const struct sockaddr* a
     if (fcntl(sock,F_SETFL,old_flags)<0) return 0;
     return 1;
 }
+static int http_header_has_chunked_transfer(const char* response,const char* header_end) {
+    const char* line=response;
+    while (line<header_end) {
+        const char* end=strstr(line,"\r\n");
+        if (!end || end>header_end) break;
+        const char* colon=(const char*)memchr(line,':',(size_t)(end-line));
+        if (colon && (size_t)(colon-line)==17) {
+            static const char key[]="transfer-encoding";
+            int matches=1;
+            for (size_t i=0;i<17;i++)
+                if (tolower((unsigned char)line[i])!=key[i]) { matches=0; break; }
+            if (matches) {
+                const char* value=colon+1;
+                while (value<end && (*value==' ' || *value=='\t')) value++;
+                while (value<end) {
+                    const char* token_end=value;
+                    while (token_end<end && *token_end!=',') token_end++;
+                    const char* trimmed_end=token_end;
+                    while (trimmed_end>value && (trimmed_end[-1]==' ' || trimmed_end[-1]=='\t')) trimmed_end--;
+                    if ((size_t)(trimmed_end-value)==7) {
+                        static const char chunked[]="chunked";
+                        int token_matches=1;
+                        for (size_t i=0;i<7;i++)
+                            if (tolower((unsigned char)value[i])!=chunked[i]) { token_matches=0; break; }
+                        if (token_matches) return 1;
+                    }
+                    value=token_end<end?token_end+1:end;
+                    while (value<end && (*value==' ' || *value=='\t')) value++;
+                }
+            }
+        }
+        line=end+2;
+    }
+    return 0;
+}
+
+static char* decode_http_chunked_body(const char* body) {
+    size_t input_length=strlen(body), position=0, output_length=0;
+    char* output=(char*)malloc(BRISE_MAX_NETWE_BYTES+1u);
+    if (!output) return NULL;
+    for (;;) {
+        const char* line_end=strstr(body+position,"\r\n");
+        if (!line_end) { free(output); return NULL; }
+        size_t line_length=(size_t)(line_end-(body+position));
+        const char* extension=(const char*)memchr(body+position,';',line_length);
+        if (extension) line_length=(size_t)(extension-(body+position));
+        while (line_length && (body[position+line_length-1]==' ' || body[position+line_length-1]=='\t')) line_length--;
+        size_t start=0;
+        while (start<line_length && (body[position+start]==' ' || body[position+start]=='\t')) start++;
+        if (line_length<=start || line_length-start>=64) { free(output); return NULL; }
+        char size_text[64];
+        size_t digits=line_length-start;
+        memcpy(size_text,body+position+start,digits);
+        size_text[digits]='\0';
+        errno=0;
+        char* parse_end=NULL;
+        unsigned long long chunk_size=strtoull(size_text,&parse_end,16);
+        if (errno==ERANGE || !parse_end || *parse_end!='\0') { free(output); return NULL; }
+        position=(size_t)(line_end-body)+2;
+        if (chunk_size==0) {
+            output[output_length]='\0';
+            return output;
+        }
+        if (chunk_size>(unsigned long long)(BRISE_MAX_NETWE_BYTES-output_length) ||
+            chunk_size>(unsigned long long)(input_length-position) ||
+            input_length-position-(size_t)chunk_size<2) { free(output); return NULL; }
+        size_t amount=(size_t)chunk_size;
+        memcpy(output+output_length,body+position,amount);
+        output_length+=amount;
+        position+=amount;
+        if (body[position]!='\r' || body[position+1]!='\n') { free(output); return NULL; }
+        position+=2;
+    }
+}
+
 static int execute_netwe_posix(BriseRuntime* rt, const char* url, const char* target, BriseErrorContext ctx) {
     int secure=0;
     char host[256]={0},host_header[320]={0},path[2048]={0},port_text[16]={0};
@@ -2484,7 +2630,16 @@ static int execute_netwe_posix(BriseRuntime* rt, const char* url, const char* ta
     char* body=strstr(response,"\r\n\r\n");
     if (!body) { free(response); set_error(rt,ctx,"Netwe response did not contain an HTTP header terminator"); return 0; }
     body+=4;
+    char* decoded_body=NULL;
+    if (http_header_has_chunked_transfer(response,body-4)) {
+        decoded_body=decode_http_chunked_body(body);
+        if (!decoded_body) {
+            free(response); set_error(rt,ctx,"Netwe received an invalid or oversized chunked response"); return 0;
+        }
+        body=decoded_body;
+    }
     BriseValue result=value_string(body);
+    free(decoded_body);
     free(response);
     if (!result.string_value || !set_var(rt,target,result)) {
         free_value(&result); set_error(rt,ctx,"Out of memory while storing Netwe response"); return 0;
@@ -2614,32 +2769,28 @@ static FileCacheEntry* find_cache(BriseRuntime* rt, const char* path) {
     return NULL;
 }
 
-int brise_execute_file(BriseRuntime* rt, const char* filename) {
-    if (!rt || !filename) return 0;
-
+static int brise_execute_file_stream(BriseRuntime* rt, const char* filename, FILE* f) {
+    if (!rt || !filename || !f) { if (f) fclose(f); return 0; }
     FileCacheEntry* cache = find_cache(rt, filename);
     if (!cache) {
-        FILE* f = fopen(filename,"rb");
-        if (!f) {
-            BriseErrorContext ectx = {0, filename};
-            set_error(rt, ectx, "Could not open file");
-            return 0;
-        }
-
         if (!ensure_capacity((void**)&rt->cache,&rt->cache_capacity,sizeof(FileCacheEntry),rt->cache_count+1)) {
             fclose(f); BriseErrorContext ectx = {0, filename}; set_error(rt, ectx, "Out of memory"); return 0;
         }
         cache = &rt->cache[rt->cache_count++];
         memset(cache,0,sizeof(*cache));
         cache->path = xstrdup(filename);
-
+        if (!cache->path) {
+            fclose(f); BriseErrorContext ectx = {0, filename}; set_error(rt, ectx, "Out of memory"); return 0;
+        }
         char line[2048];
         size_t line_no = 0;
         while (fgets(line,sizeof(line),f)) {
             line_no++;
             char* tr = trim_copy(line);
+            if (!tr) {
+                fclose(f); BriseErrorContext ectx = {line_no, filename}; set_error(rt, ectx, "Out of memory"); return 0;
+            }
             if (tr[0]=='\0' || (tr[0]=='/' && tr[1]=='/')) { free(tr); continue; }
-
             if (!ensure_capacity((void**)&cache->lines,&cache->capacity,sizeof(CachedLine),cache->count+1)) {
                 free(tr); fclose(f); BriseErrorContext ectx = {line_no, filename}; set_error(rt, ectx, "Out of memory"); return 0;
             }
@@ -2648,12 +2799,27 @@ int brise_execute_file(BriseRuntime* rt, const char* filename) {
             cache->count++;
             free(tr);
         }
+        if (ferror(f)) {
+            fclose(f); BriseErrorContext ectx = {line_no, filename}; set_error(rt, ectx, "Could not read complete file"); return 0;
+        }
+        fclose(f);
+    } else {
         fclose(f);
     }
-
     for (size_t i=0;i<cache->count;i++) {
         BriseErrorContext ctx = {cache->lines[i].line_number, cache->path};
         if (!execute_tokens(rt, &cache->lines[i].tokens, ctx)) return 0;
     }
     return 1;
+}
+
+int brise_execute_file(BriseRuntime* rt, const char* filename) {
+    if (!rt || !filename) return 0;
+    FILE* f=fopen(filename,"rb");
+    if (!f) {
+        BriseErrorContext ectx = {0, filename};
+        set_error(rt, ectx, "Could not open file");
+        return 0;
+    }
+    return brise_execute_file_stream(rt,filename,f);
 }
