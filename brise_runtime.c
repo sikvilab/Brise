@@ -1673,18 +1673,24 @@ static int execute_cmd_if(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
     return 1;
 }
 
+static int resolve_script_local_path(BriseErrorContext ctx, const char* filename, char* path, size_t path_size);
+static FILE* open_script_local_file(BriseErrorContext ctx, const char* filename, int writing);
+
 static int execute_cmd_include(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
-    if (tokens->count < 4 || tokens->items[2].type != TOK_STRING) { set_error(rt,ctx,"Include expects string file"); return 0; }
-    char path[1024];
-    const char* slash = strrchr(ctx.file, '/');
-    if (!slash) slash = strrchr(ctx.file, '\\');
-    if (slash) {
-        size_t n = (size_t)(slash - ctx.file + 1);
-        memcpy(path, ctx.file, n); path[n]=0;
-        strncat(path, tokens->items[2].text, sizeof(path)-strlen(path)-1);
-    } else {
-        snprintf(path,sizeof(path),"%s",tokens->items[2].text);
+    if (tokens->count < 4 || tokens->items[2].type != TOK_STRING) {
+        set_error(rt,ctx,"Include expects string file"); return 0;
     }
+    char path[1024];
+    if (!resolve_script_local_path(ctx,tokens->items[2].text,path,sizeof(path))) {
+        set_error(rt,ctx,"Include accepts a regular filename in the script directory; paths are not allowed");
+        return 0;
+    }
+    FILE* probe=open_script_local_file(ctx,tokens->items[2].text,0);
+    if (!probe) {
+        set_error(rt,ctx,"Include requires a regular, non-symlink file in the script directory");
+        return 0;
+    }
+    if (fclose(probe)!=0) { set_error(rt,ctx,"Include could not close the validated file"); return 0; }
     return brise_execute_file(rt,path);
 }
 
@@ -1769,9 +1775,15 @@ static int execute_cmd_random(BriseRuntime* rt, BriseTokenArray* tokens, BriseEr
     double mn,mx;
     if (!value_to_number(&minv,&mn) || !value_to_number(&maxv,&mx)) { free_value(&minv); free_value(&maxv); set_error(rt,ctx,"random expects numeric range"); return 0; }
     free_value(&minv); free_value(&maxv);
-    if (mn > mx) { set_error(rt,ctx,"random min > max"); return 0; }
-    int r = (int)mn + (rand() % ((int)mx - (int)mn + 1));
-    return set_var(rt,"random",value_number((double)r));
+    if (!isfinite(mn) || !isfinite(mx) || mn > mx || mn < (double)INT_MIN || mn > (double)INT_MAX ||
+        mx < (double)INT_MIN || mx > (double)INT_MAX) {
+        set_error(rt,ctx,"random expects an ordered range within the int limits"); return 0;
+    }
+    int64_t low=(int64_t)mn, high=(int64_t)mx;
+    uint64_t range=(uint64_t)(high-low)+UINT64_C(1);
+    uint64_t bits=((uint64_t)(unsigned int)rand()<<32) ^ (uint64_t)(unsigned int)rand();
+    int64_t chosen=low+(int64_t)(bits%range);
+    return set_var(rt,"random",value_number((double)chosen));
 }
 
 static int execute_cmd_solve(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
@@ -1969,16 +1981,61 @@ static int execute_cmd_write(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     return 1;
 }
 
+static int validate_call_library_file(const char* lib, const char* path) {
+    size_t n=strlen(lib);
+    if (!n || n>64) return 0;
+    for (size_t i=0;i<n;i++) {
+        unsigned char c=(unsigned char)lib[i];
+        if (!(isalnum(c) || c=='_' || c=='-')) return 0;
+    }
+#ifdef _WIN32
+    HANDLE dir=CreateFileA("libs",FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    if (dir==INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION di;
+    int dir_ok=GetFileInformationByHandle(dir,&di) &&
+        (di.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) && !(di.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT);
+    CloseHandle(dir);
+    if (!dir_ok) return 0;
+    HANDLE file=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    if (file==INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION fi;
+    int file_ok=GetFileInformationByHandle(file,&fi) &&
+        !(fi.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT));
+    CloseHandle(file);
+    return file_ok;
+#else
+    int dirfd=open("libs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW
+#ifdef O_CLOEXEC
+        |O_CLOEXEC
+#endif
+    );
+    if (dirfd<0) return 0;
+    int fd=openat(dirfd,lib,O_RDONLY|O_NOFOLLOW
+#ifdef O_CLOEXEC
+        |O_CLOEXEC
+#endif
+    );
+    close(dirfd);
+    if (fd<0) return 0;
+    struct stat info;
+    int file_ok=fstat(fd,&info)==0 && S_ISREG(info.st_mode);
+    close(fd);
+    return file_ok;
+#endif
+}
+
 static int execute_cmd_call(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
     if (tokens->count < 2 || tokens->items[1].type != TOK_STRING) { set_error(rt,ctx,"Call expects string library name"); return 0; }
     const char* lib = tokens->items[1].text;
-    if (strcmp(lib, "Graph") == 0) {
-        rt->graph_enabled = 1;
-        return 1;
-    }
+    if (strcmp(lib, "Graph") == 0) { rt->graph_enabled = 1; return 1; }
     char path[1024];
-    snprintf(path, sizeof(path), "libs/%s.bri", lib);
-    return brise_execute_file(rt, path);
+    int written=snprintf(path,sizeof(path),"libs/%s.bri",lib);
+    if (written<0 || (size_t)written>=sizeof(path) || !validate_call_library_file(lib,path)) {
+        set_error(rt,ctx,"Call accepts a library name containing only letters, digits, '_' or '-' and a regular file in libs/");
+        return 0;
+    }
+    return brise_execute_file(rt,path);
 }
 
 static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
