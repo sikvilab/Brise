@@ -1,2 +1,2 @@
-Call: "../README"
+Call "../README"
 say:"Call traversal unexpectedly succeeded."
