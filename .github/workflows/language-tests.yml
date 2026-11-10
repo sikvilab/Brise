@@ -51,6 +51,8 @@ jobs:
               exit 1
             fi
           done
+      - name: Test valid Call library loading
+        run: ./brise tests/call_library_smoke.bri
       - name: Test random integer boundaries
         run: |
           ./brise tests/random_bounds.bri
@@ -140,6 +142,8 @@ jobs:
             $result = Start-Process -FilePath $exe -ArgumentList @($script) -Wait -PassThru -NoNewWindow
             if ($result.ExitCode -eq 0) { throw "$script unexpectedly succeeded" }
           }
+      - name: Test valid Call library loading
+        run: .\\brise.exe tests/call_library_smoke.bri
       - name: Test random integer boundaries
         shell: pwsh
         run: |
