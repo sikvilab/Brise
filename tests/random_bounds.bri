@@ -1,0 +1,6 @@
+random: -2147483648 2147483647
+assert: random >= -2147483648
+assert: random <= 2147483647
+random: 7 7
+assert: random == 7
+say:"Random boundary tests passed."
