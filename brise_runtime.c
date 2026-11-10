@@ -2449,6 +2449,81 @@ static int brise_connect_with_timeout(BriseSocket sock, const struct sockaddr* a
     if (fcntl(sock,F_SETFL,old_flags)<0) return 0;
     return 1;
 }
+static int http_header_has_chunked_transfer(const char* response,const char* header_end) {
+    const char* line=response;
+    while (line<header_end) {
+        const char* end=strstr(line,"\r\n");
+        if (!end || end>header_end) break;
+        const char* colon=(const char*)memchr(line,':',(size_t)(end-line));
+        if (colon && (size_t)(colon-line)==17) {
+            static const char key[]="transfer-encoding";
+            int matches=1;
+            for (size_t i=0;i<17;i++)
+                if (tolower((unsigned char)line[i])!=key[i]) { matches=0; break; }
+            if (matches) {
+                const char* value=colon+1;
+                while (value<end && (*value==' ' || *value=='\t')) value++;
+                while (value<end) {
+                    const char* token_end=value;
+                    while (token_end<end && *token_end!=',') token_end++;
+                    const char* trimmed_end=token_end;
+                    while (trimmed_end>value && (trimmed_end[-1]==' ' || trimmed_end[-1]=='\t')) trimmed_end--;
+                    if ((size_t)(trimmed_end-value)==7) {
+                        static const char chunked[]="chunked";
+                        int token_matches=1;
+                        for (size_t i=0;i<7;i++)
+                            if (tolower((unsigned char)value[i])!=chunked[i]) { token_matches=0; break; }
+                        if (token_matches) return 1;
+                    }
+                    value=token_end<end?token_end+1:end;
+                    while (value<end && (*value==' ' || *value=='\t')) value++;
+                }
+            }
+        }
+        line=end+2;
+    }
+    return 0;
+}
+
+static char* decode_http_chunked_body(const char* body) {
+    size_t input_length=strlen(body), position=0, output_length=0;
+    char* output=(char*)malloc(BRISE_MAX_NETWE_BYTES+1u);
+    if (!output) return NULL;
+    for (;;) {
+        const char* line_end=strstr(body+position,"\r\n");
+        if (!line_end) { free(output); return NULL; }
+        size_t line_length=(size_t)(line_end-(body+position));
+        const char* extension=(const char*)memchr(body+position,';',line_length);
+        if (extension) line_length=(size_t)(extension-(body+position));
+        while (line_length && (body[position+line_length-1]==' ' || body[position+line_length-1]=='\t')) line_length--;
+        size_t start=0;
+        while (start<line_length && (body[position+start]==' ' || body[position+start]=='\t')) start++;
+        if (line_length<=start || line_length-start>=64) { free(output); return NULL; }
+        char size_text[64];
+        size_t digits=line_length-start;
+        memcpy(size_text,body+position+start,digits);
+        size_text[digits]='\0';
+        errno=0;
+        char* parse_end=NULL;
+        unsigned long long chunk_size=strtoull(size_text,&parse_end,16);
+        if (errno==ERANGE || !parse_end || *parse_end!='\0') { free(output); return NULL; }
+        position=(size_t)(line_end-body)+2;
+        if (chunk_size==0) {
+            output[output_length]='\0';
+            return output;
+        }
+        if (chunk_size>(unsigned long long)(BRISE_MAX_NETWE_BYTES-output_length) ||
+            chunk_size>(unsigned long long)(input_length-position) ||
+            input_length-position-(size_t)chunk_size<2) { free(output); return NULL; }
+        size_t amount=(size_t)chunk_size;
+        memcpy(output+output_length,body+position,amount);
+        output_length+=amount;
+        position+=amount;
+        if (body[position]!='\r' || body[position+1]!='\n') { free(output); return NULL; }
+        position+=2;
+    }
+}
+
 static int execute_netwe_posix(BriseRuntime* rt, const char* url, const char* target, BriseErrorContext ctx) {
     int secure=0;
     char host[256]={0},host_header[320]={0},path[2048]={0},port_text[16]={0};
@@ -2541,7 +2616,16 @@ static int execute_netwe_posix(BriseRuntime* rt, const char* url, const char* ta
     char* body=strstr(response,"\r\n\r\n");
     if (!body) { free(response); set_error(rt,ctx,"Netwe response did not contain an HTTP header terminator"); return 0; }
     body+=4;
+    char* decoded_body=NULL;
+    if (http_header_has_chunked_transfer(response,body-4)) {
+        decoded_body=decode_http_chunked_body(body);
+        if (!decoded_body) {
+            free(response); set_error(rt,ctx,"Netwe received an invalid or oversized chunked response"); return 0;
+        }
+        body=decoded_body;
+    }
     BriseValue result=value_string(body);
+    free(decoded_body);
     free(response);
     if (!result.string_value || !set_var(rt,target,result)) {
         free_value(&result); set_error(rt,ctx,"Out of memory while storing Netwe response"); return 0;
