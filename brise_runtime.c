@@ -1675,6 +1675,7 @@ static int execute_cmd_if(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorC
 
 static int resolve_script_local_path(BriseErrorContext ctx, const char* filename, char* path, size_t path_size);
 static FILE* open_script_local_file(BriseErrorContext ctx, const char* filename, int writing);
+static int brise_execute_file_stream(BriseRuntime* rt, const char* filename, FILE* stream);
 
 static int execute_cmd_include(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
     if (tokens->count < 4 || tokens->items[2].type != TOK_STRING) {
@@ -1685,13 +1686,12 @@ static int execute_cmd_include(BriseRuntime* rt, BriseTokenArray* tokens, BriseE
         set_error(rt,ctx,"Include accepts a regular filename in the script directory; paths are not allowed");
         return 0;
     }
-    FILE* probe=open_script_local_file(ctx,tokens->items[2].text,0);
-    if (!probe) {
+    FILE* included=open_script_local_file(ctx,tokens->items[2].text,0);
+    if (!included) {
         set_error(rt,ctx,"Include requires a regular, non-symlink file in the script directory");
         return 0;
     }
-    if (fclose(probe)!=0) { set_error(rt,ctx,"Include could not close the validated file"); return 0; }
-    return brise_execute_file(rt,path);
+    return brise_execute_file_stream(rt,path,included);
 }
 
 static int execute_cmd_list(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
@@ -1981,47 +1981,52 @@ static int execute_cmd_write(BriseRuntime* rt, BriseTokenArray* tokens, BriseErr
     return 1;
 }
 
-static int validate_call_library_file(const char* lib, const char* path) {
+static FILE* open_call_library_file(const char* lib, const char* path) {
     size_t n=strlen(lib);
-    if (!n || n>64) return 0;
+    if (!n || n>64) return NULL;
     for (size_t i=0;i<n;i++) {
         unsigned char c=(unsigned char)lib[i];
-        if (!(isalnum(c) || c=='_' || c=='-')) return 0;
+        if (!(isalnum(c) || c=='_' || c=='-')) return NULL;
     }
 #ifdef _WIN32
     HANDLE dir=CreateFileA("libs",FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-    if (dir==INVALID_HANDLE_VALUE) return 0;
+    if (dir==INVALID_HANDLE_VALUE) return NULL;
     BY_HANDLE_FILE_INFORMATION di;
     int dir_ok=GetFileInformationByHandle(dir,&di) &&
         (di.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) && !(di.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT);
     CloseHandle(dir);
-    if (!dir_ok) return 0;
+    if (!dir_ok) return NULL;
     HANDLE file=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-    if (file==INVALID_HANDLE_VALUE) return 0;
+    if (file==INVALID_HANDLE_VALUE) return NULL;
     BY_HANDLE_FILE_INFORMATION fi;
     int file_ok=GetFileInformationByHandle(file,&fi) &&
         !(fi.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT));
-    CloseHandle(file);
-    return file_ok;
+    if (!file_ok) { CloseHandle(file); return NULL; }
+    int fd=_open_osfhandle((intptr_t)file,_O_BINARY|_O_RDONLY);
+    if (fd<0) { CloseHandle(file); return NULL; }
+    FILE* stream=_fdopen(fd,"rb");
+    if (!stream) _close(fd);
+    return stream;
 #else
     int dirfd=open("libs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW
 #ifdef O_CLOEXEC
         |O_CLOEXEC
 #endif
     );
-    if (dirfd<0) return 0;
+    if (dirfd<0) return NULL;
     int fd=openat(dirfd,lib,O_RDONLY|O_NOFOLLOW
 #ifdef O_CLOEXEC
         |O_CLOEXEC
 #endif
     );
     close(dirfd);
-    if (fd<0) return 0;
+    if (fd<0) return NULL;
     struct stat info;
-    int file_ok=fstat(fd,&info)==0 && S_ISREG(info.st_mode);
-    close(fd);
-    return file_ok;
+    if (fstat(fd,&info)!=0 || !S_ISREG(info.st_mode)) { close(fd); return NULL; }
+    FILE* stream=fdopen(fd,"rb");
+    if (!stream) close(fd);
+    return stream;
 #endif
 }
 
@@ -2031,11 +2036,15 @@ static int execute_cmd_call(BriseRuntime* rt, BriseTokenArray* tokens, BriseErro
     if (strcmp(lib, "Graph") == 0) { rt->graph_enabled = 1; return 1; }
     char path[1024];
     int written=snprintf(path,sizeof(path),"libs/%s.bri",lib);
-    if (written<0 || (size_t)written>=sizeof(path) || !validate_call_library_file(lib,path)) {
-        set_error(rt,ctx,"Call accepts a library name containing only letters, digits, '_' or '-' and a regular file in libs/");
+    if (written<0 || (size_t)written>=sizeof(path)) {
+        set_error(rt,ctx,"Call library path is too long"); return 0;
+    }
+    FILE* library=open_call_library_file(lib,path);
+    if (!library) {
+        set_error(rt,ctx,"Call accepts a safe library name and a regular, non-symlink file in libs/");
         return 0;
     }
-    return brise_execute_file(rt,path);
+    return brise_execute_file_stream(rt,path,library);
 }
 
 static int execute_cmd_graph(BriseRuntime* rt, BriseTokenArray* tokens, BriseErrorContext ctx) {
@@ -2755,32 +2764,28 @@ static FileCacheEntry* find_cache(BriseRuntime* rt, const char* path) {
     return NULL;
 }
 
-int brise_execute_file(BriseRuntime* rt, const char* filename) {
-    if (!rt || !filename) return 0;
-
+static int brise_execute_file_stream(BriseRuntime* rt, const char* filename, FILE* f) {
+    if (!rt || !filename || !f) { if (f) fclose(f); return 0; }
     FileCacheEntry* cache = find_cache(rt, filename);
     if (!cache) {
-        FILE* f = fopen(filename,"rb");
-        if (!f) {
-            BriseErrorContext ectx = {0, filename};
-            set_error(rt, ectx, "Could not open file");
-            return 0;
-        }
-
         if (!ensure_capacity((void**)&rt->cache,&rt->cache_capacity,sizeof(FileCacheEntry),rt->cache_count+1)) {
             fclose(f); BriseErrorContext ectx = {0, filename}; set_error(rt, ectx, "Out of memory"); return 0;
         }
         cache = &rt->cache[rt->cache_count++];
         memset(cache,0,sizeof(*cache));
         cache->path = xstrdup(filename);
-
+        if (!cache->path) {
+            fclose(f); BriseErrorContext ectx = {0, filename}; set_error(rt, ectx, "Out of memory"); return 0;
+        }
         char line[2048];
         size_t line_no = 0;
         while (fgets(line,sizeof(line),f)) {
             line_no++;
             char* tr = trim_copy(line);
+            if (!tr) {
+                fclose(f); BriseErrorContext ectx = {line_no, filename}; set_error(rt, ectx, "Out of memory"); return 0;
+            }
             if (tr[0]=='\0' || (tr[0]=='/' && tr[1]=='/')) { free(tr); continue; }
-
             if (!ensure_capacity((void**)&cache->lines,&cache->capacity,sizeof(CachedLine),cache->count+1)) {
                 free(tr); fclose(f); BriseErrorContext ectx = {line_no, filename}; set_error(rt, ectx, "Out of memory"); return 0;
             }
@@ -2789,12 +2794,27 @@ int brise_execute_file(BriseRuntime* rt, const char* filename) {
             cache->count++;
             free(tr);
         }
+        if (ferror(f)) {
+            fclose(f); BriseErrorContext ectx = {line_no, filename}; set_error(rt, ectx, "Could not read complete file"); return 0;
+        }
+        fclose(f);
+    } else {
         fclose(f);
     }
-
     for (size_t i=0;i<cache->count;i++) {
         BriseErrorContext ctx = {cache->lines[i].line_number, cache->path};
         if (!execute_tokens(rt, &cache->lines[i].tokens, ctx)) return 0;
     }
     return 1;
+}
+
+int brise_execute_file(BriseRuntime* rt, const char* filename) {
+    if (!rt || !filename) return 0;
+    FILE* f=fopen(filename,"rb");
+    if (!f) {
+        BriseErrorContext ectx = {0, filename};
+        set_error(rt, ectx, "Could not open file");
+        return 0;
+    }
+    return brise_execute_file_stream(rt,filename,f);
 }
