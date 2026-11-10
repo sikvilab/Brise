@@ -186,7 +186,7 @@ API:
 - NN:train(name, input_matrix, target_matrix, epochs, learning_rate) trains with online SGD/backpropagation and mean-squared-error gradients.
 - NN:save(name, "file.nn") and NN:load(name, "file.nn") persist/restore model parameters.
 
-Input and target matrices must have the same number of rows; their column counts must match the network input and output widths. Matrix indexes are zero-based. The model file is a versioned text format, not a portable executable. Model parameters are limited to 1,048,576 per network; training is currently single-threaded and does not shuffle samples.
+Input and target matrices must have the same number of rows; their column counts must match the network input and output widths. Matrix indexes are zero-based. The model file is a versioned text format, not a portable executable. Model parameters are limited to 1,048,576 per network. Each training call is capped at 50,000,000 parameter operations; if a non-finite update occurs, the previous model parameters are restored. Training is currently single-threaded and does not shuffle samples.
 
 
 ### Networking
