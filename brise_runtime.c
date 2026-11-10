@@ -2015,7 +2015,12 @@ static FILE* open_call_library_file(const char* lib, const char* path) {
 #endif
     );
     if (dirfd<0) return NULL;
-    int fd=openat(dirfd,lib,O_RDONLY|O_NOFOLLOW
+    char library_filename[80];
+    int filename_length=snprintf(library_filename,sizeof(library_filename),"%s.bri",lib);
+    if (filename_length<0 || (size_t)filename_length>=sizeof(library_filename)) {
+        close(dirfd); return NULL;
+    }
+    int fd=openat(dirfd,library_filename,O_RDONLY|O_NOFOLLOW
 #ifdef O_CLOEXEC
         |O_CLOEXEC
 #endif
